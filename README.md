@@ -154,6 +154,11 @@ Client config for this mode:
 - `browser_back`
 - `browser_forward`
 - `browser_reload`
+- `browser_tab_list`
+- `browser_tab_new`
+- `browser_tab_switch`
+- `browser_tab_close`
+- `browser_tab_current`
 - `browser_snapshot`
 - `browser_query`
 - `browser_click`
@@ -176,7 +181,7 @@ Client config for this mode:
 - Roadmap: `docs/roadmap.md`
 - Navigation helpers: completed (PRD removed)
 - Advanced wait primitives: completed (PRD removed)
-- PRD (tab management): `docs/prd-tab-management.md`
+- Tab management: completed (PRD removed)
 - PRD (policy and guardrails): `docs/prd-policy-guardrails.md`
 - PRD (dialog/upload/download): `docs/prd-dialog-upload-download.md`
 - PRD (cookie/storage management): `docs/prd-cookie-storage-management.md`

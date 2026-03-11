@@ -2,10 +2,15 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from browser_bridge_mcp.actions import (
+    close_tab,
+    current_tab,
+    list_tabs,
     navigate_back,
     navigate_forward,
+    new_tab,
     normalize_evaluate_payload,
     reload_page,
+    switch_tab,
     wait_for_function,
     wait_for_network_idle,
     wait_for_text,
@@ -56,6 +61,89 @@ class _FakeEvaluateBrowser:
         if isinstance(result, Exception):
             raise result
         return result
+
+
+class _FakeTabActionBrowser:
+    def __init__(self) -> None:
+        self.tab = _FakeTab("https://example.com/a")
+        self._title = "A"
+        self.new_args: tuple[str, bool] | None = None
+        self.switch_args: tuple[str | None, int | None] | None = None
+        self.close_args: tuple[str | None, int | None, str] | None = None
+
+    async def evaluate(self, script: str):
+        if script == "document.title":
+            return self._title
+        raise AssertionError(f"Unexpected script: {script}")
+
+    async def list_tabs(self) -> list[dict[str, object]]:
+        return [
+            {
+                "tab_id": "tab-a",
+                "index": 0,
+                "url": "https://example.com/a",
+                "title": "A",
+                "active": True,
+            },
+            {
+                "tab_id": "tab-b",
+                "index": 1,
+                "url": "https://example.com/b",
+                "title": "B",
+                "active": False,
+            },
+        ]
+
+    async def new_tab(self, *, url: str = "about:blank", switch: bool = True) -> dict[str, object]:
+        self.new_args = (url, switch)
+        return {
+            "tab_id": "tab-b",
+            "index": 1,
+            "url": "https://example.com/b",
+            "title": "B",
+            "active": bool(switch),
+        }
+
+    async def switch_tab(
+        self,
+        *,
+        tab_id: str | None = None,
+        index: int | None = None,
+    ) -> dict[str, object]:
+        self.switch_args = (tab_id, index)
+        self.tab.url = "https://example.com/b"
+        self._title = "B"
+        return {
+            "tab_id": "tab-b",
+            "index": 1,
+            "url": "https://example.com/b",
+            "title": "B",
+            "active": True,
+        }
+
+    async def close_tab(
+        self,
+        *,
+        tab_id: str | None = None,
+        index: int | None = None,
+        switch_to: str = "last_active",
+    ) -> dict[str, object]:
+        self.close_args = (tab_id, index, switch_to)
+        self.tab.url = "https://example.com/a"
+        self._title = "A"
+        return {
+            "closed_tab_id": "tab-b",
+            "new_active_tab_id": "tab-a",
+        }
+
+    async def current_tab_summary(self) -> dict[str, object]:
+        return {
+            "tab_id": "tab-a",
+            "index": 0,
+            "url": "https://example.com/a",
+            "title": "A",
+            "active": True,
+        }
 
 
 class NormalizeEvaluatePayloadTest(unittest.TestCase):
@@ -214,6 +302,45 @@ class WaitActionsTest(unittest.IsolatedAsyncioTestCase):
             )
         self.assertTrue(payload["idle"])
         self.assertEqual(payload["inflight_peak"], 2)
+
+
+class TabActionsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_list_tabs_returns_count(self) -> None:
+        browser = _FakeTabActionBrowser()
+        payload = await list_tabs(browser)
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["tabs"][0]["tab_id"], "tab-a")
+
+    async def test_new_tab_returns_created_tab_id(self) -> None:
+        browser = _FakeTabActionBrowser()
+        payload = await new_tab(
+            browser,
+            url="https://example.com/b",
+            switch=True,
+            wait_seconds=0,
+        )
+        self.assertEqual(payload["created_tab_id"], "tab-b")
+        self.assertEqual(browser.new_args, ("https://example.com/b", True))
+
+    async def test_switch_tab_returns_active_tab(self) -> None:
+        browser = _FakeTabActionBrowser()
+        payload = await switch_tab(browser, index=1, wait_seconds=0)
+        self.assertEqual(payload["tab"]["tab_id"], "tab-b")
+        self.assertEqual(browser.switch_args, (None, 1))
+        self.assertEqual(payload["url"], "https://example.com/b")
+
+    async def test_close_tab_returns_close_metadata(self) -> None:
+        browser = _FakeTabActionBrowser()
+        payload = await close_tab(browser, tab_id="tab-b", switch_to="last_active")
+        self.assertEqual(payload["closed_tab_id"], "tab-b")
+        self.assertEqual(payload["new_active_tab_id"], "tab-a")
+        self.assertEqual(browser.close_args, ("tab-b", None, "last_active"))
+
+    async def test_current_tab_returns_active_summary(self) -> None:
+        browser = _FakeTabActionBrowser()
+        payload = await current_tab(browser)
+        self.assertEqual(payload["tab"]["tab_id"], "tab-a")
+        self.assertEqual(payload["url"], "https://example.com/a")
 
 
 if __name__ == "__main__":

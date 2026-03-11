@@ -13,19 +13,24 @@ from .actions import (
     DEFAULT_ACTION_WAIT_SECONDS,
     DEFAULT_EVENT_LIMIT,
     DEFAULT_HTML_LIMIT,
+    close_tab,
     click_selector,
+    current_tab,
     get_console_messages,
     get_network_requests,
     get_page_html,
     get_url_and_title,
+    list_tabs,
     navigate_back,
     navigate_forward,
     navigate_to,
+    new_tab,
     normalize_evaluate_payload,
     query_selector,
     reload_page,
     scroll_page,
     snapshot_interactive,
+    switch_tab,
     take_screenshot,
     type_into_selector,
     wait_for_function,
@@ -198,6 +203,80 @@ def create_server(
                 wait_seconds=wait_seconds,
                 ignore_cache=ignore_cache,
             ),
+        )
+
+    @mcp.tool(name="browser_tab_list", description="List open tabs and the active tab.")
+    async def browser_tab_list(
+        session_id: str,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_tab_list",
+            operation=list_tabs,
+        )
+
+    @mcp.tool(name="browser_tab_new", description="Open a new tab and optionally switch to it.")
+    async def browser_tab_new(
+        session_id: str,
+        url: str = "about:blank",
+        switch: bool = True,
+        wait_seconds: float = DEFAULT_ACTION_WAIT_SECONDS,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_tab_new",
+            operation=lambda browser: new_tab(
+                browser,
+                url=url,
+                switch=switch,
+                wait_seconds=wait_seconds,
+            ),
+        )
+
+    @mcp.tool(name="browser_tab_switch", description="Switch active tab by tab_id or index.")
+    async def browser_tab_switch(
+        session_id: str,
+        tab_id: str | None = None,
+        index: int | None = None,
+        wait_seconds: float = 0.4,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_tab_switch",
+            operation=lambda browser: switch_tab(
+                browser,
+                tab_id=tab_id,
+                index=index,
+                wait_seconds=wait_seconds,
+            ),
+        )
+
+    @mcp.tool(name="browser_tab_close", description="Close a tab by tab_id or index.")
+    async def browser_tab_close(
+        session_id: str,
+        tab_id: str | None = None,
+        index: int | None = None,
+        switch_to: str = "last_active",
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_tab_close",
+            operation=lambda browser: close_tab(
+                browser,
+                tab_id=tab_id,
+                index=index,
+                switch_to=switch_to,
+            ),
+        )
+
+    @mcp.tool(name="browser_tab_current", description="Get the active tab summary.")
+    async def browser_tab_current(
+        session_id: str,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_tab_current",
+            operation=current_tab,
         )
 
     @mcp.tool(

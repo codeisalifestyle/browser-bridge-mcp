@@ -449,6 +449,89 @@ async def reload_page(
     return payload
 
 
+async def list_tabs(browser: BridgeBrowser) -> dict[str, Any]:
+    tabs = await browser.list_tabs()
+    return {
+        "count": len(tabs),
+        "tabs": tabs,
+    }
+
+
+async def new_tab(
+    browser: BridgeBrowser,
+    *,
+    url: str = "about:blank",
+    switch: bool = True,
+    wait_seconds: float = DEFAULT_ACTION_WAIT_SECONDS,
+) -> dict[str, Any]:
+    created_tab = await browser.new_tab(url=url, switch=switch)
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
+    tabs = await browser.list_tabs()
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "created_tab_id": created_tab["tab_id"],
+            "switch": switch,
+            "count": len(tabs),
+            "tabs": tabs,
+        }
+    )
+    return payload
+
+
+async def switch_tab(
+    browser: BridgeBrowser,
+    *,
+    tab_id: str | None = None,
+    index: int | None = None,
+    wait_seconds: float = 0.4,
+) -> dict[str, Any]:
+    active_tab = await browser.switch_tab(tab_id=tab_id, index=index)
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "tab": active_tab,
+        }
+    )
+    return payload
+
+
+async def close_tab(
+    browser: BridgeBrowser,
+    *,
+    tab_id: str | None = None,
+    index: int | None = None,
+    switch_to: str = "last_active",
+) -> dict[str, Any]:
+    close_result = await browser.close_tab(
+        tab_id=tab_id,
+        index=index,
+        switch_to=switch_to,
+    )
+    tabs = await browser.list_tabs()
+    payload: dict[str, Any] = {
+        "closed_tab_id": close_result["closed_tab_id"],
+        "new_active_tab_id": close_result["new_active_tab_id"],
+        "count": len(tabs),
+        "tabs": tabs,
+    }
+    if close_result["new_active_tab_id"] is None:
+        payload.update({"url": "", "title": ""})
+        return payload
+    payload.update(await get_url_and_title(browser))
+    return payload
+
+
+async def current_tab(browser: BridgeBrowser) -> dict[str, Any]:
+    active_tab = await browser.current_tab_summary()
+    payload = await get_url_and_title(browser)
+    payload["tab"] = active_tab
+    return payload
+
+
 async def snapshot_interactive(browser: BridgeBrowser, *, limit: int) -> dict[str, Any]:
     payload = normalize_evaluate_payload(
         await browser.evaluate(_snapshot_script(clamp_limit(limit)))

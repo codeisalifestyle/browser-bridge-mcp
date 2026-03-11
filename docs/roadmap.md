@@ -23,10 +23,10 @@ This roadmap turns the proposed feature set into a delivery plan that balances q
    - Value: reduces flaky automation and retry loops.
    - Completed with tests; PRD removed per completion workflow.
 
-3. Explicit tab management
+3. Explicit tab management (completed)
    - Add list/new/switch/close tab tools.
    - Value: required for multi-tab workflows and popups.
-   - PRD: `docs/prd-tab-management.md`
+   - Completed with tests; PRD removed per completion workflow.
 
 ### Phase 2: Safety + workflow coverage (2-4 weeks)
 

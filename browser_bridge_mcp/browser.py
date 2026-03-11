@@ -186,6 +186,179 @@ class BridgeBrowser:
     async def evaluate(self, script: str) -> Any:
         return await self.tab.evaluate(script)
 
+    @staticmethod
+    def _tab_id(tab: Any) -> str:
+        target = getattr(tab, "target", None)
+        target_id = getattr(target, "target_id", None)
+        if target_id is None:
+            return str(id(tab))
+        return str(target_id)
+
+    async def _page_tabs(self) -> list[Any]:
+        if self.browser is None:
+            raise RuntimeError("Browser not started")
+        await self.browser.update_targets()
+        tabs = list(getattr(self.browser, "tabs", []) or [])
+        page_tabs: list[Any] = []
+        for tab in tabs:
+            target = getattr(tab, "target", None)
+            tab_type = getattr(target, "type_", "page")
+            if tab_type == "page":
+                page_tabs.append(tab)
+        if not page_tabs and self.tab is not None:
+            return [self.tab]
+        return page_tabs
+
+    def _tab_summary(self, tab: Any, *, index: int, active_id: str | None) -> dict[str, Any]:
+        target = getattr(tab, "target", None)
+        tab_id = self._tab_id(tab)
+        url = str(getattr(tab, "url", "") or getattr(target, "url", "") or "")
+        title = str(getattr(target, "title", "") or "")
+        return {
+            "tab_id": tab_id,
+            "index": index,
+            "url": url,
+            "title": title,
+            "active": tab_id == active_id,
+        }
+
+    async def list_tabs(self) -> list[dict[str, Any]]:
+        tabs = await self._page_tabs()
+        if tabs and self.tab is None:
+            self.tab = tabs[0]
+        active_id = self._tab_id(self.tab) if self.tab is not None else None
+        summaries = [
+            self._tab_summary(tab, index=index, active_id=active_id)
+            for index, tab in enumerate(tabs)
+        ]
+        if summaries and not any(row["active"] for row in summaries):
+            self.tab = tabs[0]
+            active_id = self._tab_id(self.tab)
+            for row in summaries:
+                row["active"] = row["tab_id"] == active_id
+        return summaries
+
+    async def new_tab(self, *, url: str = "about:blank", switch: bool = True) -> dict[str, Any]:
+        if self.browser is None:
+            raise RuntimeError("Browser not started")
+        previous = self.tab
+        created = await self.browser.get(url=url, new_tab=True)
+        if switch:
+            try:
+                await created.activate()
+            except Exception:
+                pass
+            self.tab = created
+        elif previous is not None:
+            try:
+                await previous.activate()
+            except Exception:
+                pass
+            self.tab = previous
+
+        tabs = await self.list_tabs()
+        created_id = self._tab_id(created)
+        for row in tabs:
+            if row["tab_id"] == created_id:
+                return row
+        return {
+            "tab_id": created_id,
+            "index": -1,
+            "url": str(getattr(created, "url", "") or ""),
+            "title": "",
+            "active": bool(switch),
+        }
+
+    async def _resolve_tab(
+        self,
+        *,
+        tab_id: str | None = None,
+        index: int | None = None,
+    ) -> tuple[Any, int]:
+        if tab_id is not None and index is not None:
+            raise ValueError("Provide either tab_id or index, not both.")
+        if tab_id is None and index is None:
+            raise ValueError("Provide tab_id or index.")
+
+        tabs = await self._page_tabs()
+        if tab_id is not None:
+            for idx, tab in enumerate(tabs):
+                if self._tab_id(tab) == tab_id:
+                    return tab, idx
+            raise ValueError(f"Tab not found: {tab_id}")
+
+        resolved_index = int(index)  # type: ignore[arg-type]
+        if resolved_index < 0 or resolved_index >= len(tabs):
+            raise ValueError(f"Tab index out of range: {resolved_index}")
+        return tabs[resolved_index], resolved_index
+
+    async def switch_tab(
+        self,
+        *,
+        tab_id: str | None = None,
+        index: int | None = None,
+    ) -> dict[str, Any]:
+        target_tab, _ = await self._resolve_tab(tab_id=tab_id, index=index)
+        try:
+            await target_tab.activate()
+        except Exception:
+            pass
+        self.tab = target_tab
+        tabs = await self.list_tabs()
+        active_id = self._tab_id(target_tab)
+        for row in tabs:
+            if row["tab_id"] == active_id:
+                return row
+        raise RuntimeError("Failed to activate requested tab.")
+
+    async def close_tab(
+        self,
+        *,
+        tab_id: str | None = None,
+        index: int | None = None,
+        switch_to: str = "last_active",
+    ) -> dict[str, Any]:
+        target_tab, _ = await self._resolve_tab(tab_id=tab_id, index=index)
+        closing_id = self._tab_id(target_tab)
+        current_id = self._tab_id(self.tab) if self.tab is not None else None
+        await target_tab.close()
+        await asyncio.sleep(0.1)
+
+        remaining_tabs = await self._page_tabs()
+        if not remaining_tabs:
+            self.tab = None
+            return {
+                "closed_tab_id": closing_id,
+                "new_active_tab_id": None,
+            }
+
+        if switch_to == "first":
+            new_active = remaining_tabs[0]
+        elif current_id and current_id != closing_id:
+            existing = [tab for tab in remaining_tabs if self._tab_id(tab) == current_id]
+            new_active = existing[0] if existing else remaining_tabs[-1]
+        else:
+            new_active = remaining_tabs[-1]
+
+        try:
+            await new_active.activate()
+        except Exception:
+            pass
+        self.tab = new_active
+        return {
+            "closed_tab_id": closing_id,
+            "new_active_tab_id": self._tab_id(new_active),
+        }
+
+    async def current_tab_summary(self) -> dict[str, Any]:
+        tabs = await self.list_tabs()
+        for row in tabs:
+            if row["active"]:
+                return row
+        if tabs:
+            return tabs[0]
+        raise RuntimeError("No browser tab is currently available.")
+
     async def select_first(self, selectors: list[str]) -> Any | None:
         for selector in selectors:
             try:
