@@ -18,9 +18,12 @@ from .actions import (
     get_network_requests,
     get_page_html,
     get_url_and_title,
+    navigate_back,
+    navigate_forward,
     navigate_to,
     normalize_evaluate_payload,
     query_selector,
+    reload_page,
     scroll_page,
     snapshot_interactive,
     take_screenshot,
@@ -146,6 +149,50 @@ def create_server(
                 browser,
                 url=url,
                 wait_seconds=wait_seconds,
+            ),
+        )
+
+    @mcp.tool(name="browser_back", description="Navigate one step back in browser history.")
+    async def browser_back(
+        session_id: str,
+        wait_seconds: float = DEFAULT_ACTION_WAIT_SECONDS,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_back",
+            operation=lambda browser: navigate_back(
+                browser,
+                wait_seconds=wait_seconds,
+            ),
+        )
+
+    @mcp.tool(name="browser_forward", description="Navigate one step forward in browser history.")
+    async def browser_forward(
+        session_id: str,
+        wait_seconds: float = DEFAULT_ACTION_WAIT_SECONDS,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_forward",
+            operation=lambda browser: navigate_forward(
+                browser,
+                wait_seconds=wait_seconds,
+            ),
+        )
+
+    @mcp.tool(name="browser_reload", description="Reload the current page.")
+    async def browser_reload(
+        session_id: str,
+        wait_seconds: float = DEFAULT_ACTION_WAIT_SECONDS,
+        ignore_cache: bool = False,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_reload",
+            operation=lambda browser: reload_page(
+                browser,
+                wait_seconds=wait_seconds,
+                ignore_cache=ignore_cache,
             ),
         )
 

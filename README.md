@@ -151,6 +151,9 @@ Client config for this mode:
 
 - `browser_url`
 - `browser_navigate`
+- `browser_back`
+- `browser_forward`
+- `browser_reload`
 - `browser_snapshot`
 - `browser_query`
 - `browser_click`
@@ -163,6 +166,18 @@ Client config for this mode:
 - `browser_network_requests`
 - `browser_take_screenshot`
 - `browser_evaluate`
+
+## Product planning docs
+
+- Roadmap: `docs/roadmap.md`
+- Navigation helpers: completed (PRD removed)
+- PRD (advanced wait primitives): `docs/prd-wait-primitives.md`
+- PRD (tab management): `docs/prd-tab-management.md`
+- PRD (policy and guardrails): `docs/prd-policy-guardrails.md`
+- PRD (dialog/upload/download): `docs/prd-dialog-upload-download.md`
+- PRD (cookie/storage management): `docs/prd-cookie-storage-management.md`
+- PRD (CDP network capture): `docs/prd-network-cdp-capture.md`
+- PRD (session trace + replay): `docs/prd-session-trace-replay.md`
 
 ## Typical flow
 

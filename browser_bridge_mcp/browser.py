@@ -159,6 +159,30 @@ class BridgeBrowser:
         if wait_seconds > 0:
             await asyncio.sleep(wait_seconds)
 
+    async def go_back(self) -> None:
+        await self.evaluate("history.back()")
+
+    async def go_forward(self) -> None:
+        await self.evaluate("history.forward()")
+
+    async def reload(self, *, ignore_cache: bool = False) -> None:
+        if not self.tab:
+            raise RuntimeError("Browser not started")
+
+        current_url = str(getattr(self.tab, "url", "") or "")
+        if ignore_cache and self._cdp_page is not None:
+            try:
+                await self.tab.send(self._cdp_page.reload(ignore_cache=True))
+                return
+            except Exception as exc:
+                logger.debug("CDP cache-bypass reload failed, falling back: %s", exc)
+
+        try:
+            await self.evaluate("location.reload()")
+        except Exception:
+            if current_url:
+                await self.goto(current_url)
+
     async def evaluate(self, script: str) -> Any:
         return await self.tab.evaluate(script)
 

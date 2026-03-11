@@ -335,6 +335,49 @@ async def navigate_to(
     return await get_url_and_title(browser)
 
 
+async def navigate_back(
+    browser: BridgeBrowser,
+    *,
+    wait_seconds: float = DEFAULT_ACTION_WAIT_SECONDS,
+) -> dict[str, Any]:
+    before = await get_url_and_title(browser)
+    await browser.go_back()
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
+    after = await get_url_and_title(browser)
+    after["navigated"] = before != after
+    return after
+
+
+async def navigate_forward(
+    browser: BridgeBrowser,
+    *,
+    wait_seconds: float = DEFAULT_ACTION_WAIT_SECONDS,
+) -> dict[str, Any]:
+    before = await get_url_and_title(browser)
+    await browser.go_forward()
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
+    after = await get_url_and_title(browser)
+    after["navigated"] = before != after
+    return after
+
+
+async def reload_page(
+    browser: BridgeBrowser,
+    *,
+    wait_seconds: float = DEFAULT_ACTION_WAIT_SECONDS,
+    ignore_cache: bool = False,
+) -> dict[str, Any]:
+    await browser.reload(ignore_cache=ignore_cache)
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
+    payload = await get_url_and_title(browser)
+    payload["reloaded"] = True
+    payload["ignore_cache"] = bool(ignore_cache)
+    return payload
+
+
 async def snapshot_interactive(browser: BridgeBrowser, *, limit: int) -> dict[str, Any]:
     payload = normalize_evaluate_payload(
         await browser.evaluate(_snapshot_script(clamp_limit(limit)))
