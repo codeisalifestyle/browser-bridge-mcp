@@ -28,7 +28,11 @@ from .actions import (
     snapshot_interactive,
     take_screenshot,
     type_into_selector,
+    wait_for_function,
+    wait_for_network_idle,
     wait_for_selector,
+    wait_for_text,
+    wait_for_url,
     wait_seconds as wait_for_seconds,
 )
 from .runtime import BrowserSessionManager
@@ -299,6 +303,86 @@ def create_server(
                 browser,
                 selector=selector,
                 timeout_seconds=timeout_seconds,
+            ),
+        )
+
+    @mcp.tool(name="browser_wait_for_url", description="Wait for URL substring or regex match.")
+    async def browser_wait_for_url_tool(
+        session_id: str,
+        url_contains: str | None = None,
+        url_regex: str | None = None,
+        timeout_seconds: float = 10.0,
+        poll_interval_seconds: float = 0.2,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_wait_for_url",
+            operation=lambda browser: wait_for_url(
+                browser,
+                url_contains=url_contains,
+                url_regex=url_regex,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+            ),
+        )
+
+    @mcp.tool(name="browser_wait_for_text", description="Wait until text appears in a selector.")
+    async def browser_wait_for_text_tool(
+        session_id: str,
+        text: str,
+        selector: str = "body",
+        case_sensitive: bool = False,
+        timeout_seconds: float = 10.0,
+        poll_interval_seconds: float = 0.2,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_wait_for_text",
+            operation=lambda browser: wait_for_text(
+                browser,
+                text=text,
+                selector=selector,
+                case_sensitive=case_sensitive,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+            ),
+        )
+
+    @mcp.tool(name="browser_wait_for_function", description="Wait for a JavaScript expression to become truthy.")
+    async def browser_wait_for_function_tool(
+        session_id: str,
+        script: str,
+        timeout_seconds: float = 10.0,
+        poll_interval_seconds: float = 0.2,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_wait_for_function",
+            operation=lambda browser: wait_for_function(
+                browser,
+                script=script,
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=poll_interval_seconds,
+            ),
+        )
+
+    @mcp.tool(name="browser_wait_for_network_idle", description="Wait until in-page network activity is idle.")
+    async def browser_wait_for_network_idle_tool(
+        session_id: str,
+        idle_ms: int = 500,
+        timeout_seconds: float = 10.0,
+        max_inflight: int = 0,
+        poll_interval_seconds: float = 0.2,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_wait_for_network_idle",
+            operation=lambda browser: wait_for_network_idle(
+                browser,
+                idle_ms=idle_ms,
+                timeout_seconds=timeout_seconds,
+                max_inflight=max_inflight,
+                poll_interval_seconds=poll_interval_seconds,
             ),
         )
 

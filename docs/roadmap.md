@@ -18,10 +18,10 @@ This roadmap turns the proposed feature set into a delivery plan that balances q
    - Value: immediate usability for agent loops.
    - Completed with tests; PRD removed per completion workflow.
 
-2. Advanced wait primitives
+2. Advanced wait primitives (completed)
    - Add waits for URL, text, function predicate, and network-idle.
    - Value: reduces flaky automation and retry loops.
-   - PRD: `docs/prd-wait-primitives.md`
+   - Completed with tests; PRD removed per completion workflow.
 
 3. Explicit tab management
    - Add list/new/switch/close tab tools.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,8 @@ MAX_ACTION_LIMIT = 300
 DEFAULT_EVENT_LIMIT = 120
 MAX_EVENT_LIMIT = 500
 DEFAULT_HTML_LIMIT = 200_000
+MIN_POLL_INTERVAL_SECONDS = 0.05
+MAX_POLL_INTERVAL_SECONDS = 2.0
 
 
 _OBSERVER_SCRIPT = r"""
@@ -24,6 +27,8 @@ _OBSERVER_SCRIPT = r"""
   window.__bbmcpObserversInstalled = true;
   window.__bbmcpConsoleLogs = window.__bbmcpConsoleLogs || [];
   window.__bbmcpNetworkLogs = window.__bbmcpNetworkLogs || [];
+  window.__bbmcpNetworkInFlight = Number(window.__bbmcpNetworkInFlight || 0);
+  window.__bbmcpLastNetworkActivityTs = Number(window.__bbmcpLastNetworkActivityTs || Date.now());
   const MAX_BUFFER = 500;
 
   const pushBounded = (arr, value) => {
@@ -50,6 +55,17 @@ _OBSERVER_SCRIPT = r"""
   };
 
   const now = () => new Date().toISOString();
+  const markNetworkActivity = () => {
+    window.__bbmcpLastNetworkActivityTs = Date.now();
+  };
+  const incrementInFlight = () => {
+    window.__bbmcpNetworkInFlight = Number(window.__bbmcpNetworkInFlight || 0) + 1;
+    markNetworkActivity();
+  };
+  const decrementInFlight = () => {
+    window.__bbmcpNetworkInFlight = Math.max(0, Number(window.__bbmcpNetworkInFlight || 0) - 1);
+    markNetworkActivity();
+  };
 
   for (const level of ["log", "info", "warn", "error", "debug"]) {
     const original = console[level];
@@ -84,6 +100,7 @@ _OBSERVER_SCRIPT = r"""
         if (init && init.method) method = String(init.method).toUpperCase();
       } catch {}
 
+      incrementInFlight();
       try {
         const response = await originalFetch(...args);
         pushBounded(window.__bbmcpNetworkLogs, {
@@ -108,6 +125,8 @@ _OBSERVER_SCRIPT = r"""
           error: safeString(error),
         });
         throw error;
+      } finally {
+        decrementInFlight();
       }
     };
     wrappedFetch.__bbmcpWrapped = true;
@@ -129,6 +148,7 @@ _OBSERVER_SCRIPT = r"""
     XMLHttpRequest.prototype.send = function (...args) {
       const startedAt = Date.now();
       const meta = this.__bbmcpMeta || { method: "GET", url: "unknown" };
+      incrementInFlight();
 
       const onDone = () => {
         try {
@@ -142,6 +162,7 @@ _OBSERVER_SCRIPT = r"""
             duration_ms: Date.now() - startedAt,
           });
         } catch {}
+        decrementInFlight();
       };
 
       this.addEventListener("loadend", onDone, { once: true });
@@ -310,6 +331,56 @@ def _event_fetch_script(buffer_name: str, limit: int, clear: bool) -> str:
       }};
     }})()
     """
+
+
+def _network_idle_status_script() -> str:
+    return """
+    (() => {
+      const now = Date.now();
+      const inFlight = Number(window.__bbmcpNetworkInFlight || 0);
+      const lastActivity = Number(window.__bbmcpLastNetworkActivityTs || now);
+      return {
+        in_flight: Math.max(0, inFlight),
+        idle_for_ms: Math.max(0, now - lastActivity),
+      };
+    })()
+    """
+
+
+def _text_presence_script(selector: str, text: str, case_sensitive: bool) -> str:
+    selector_json = json.dumps(selector)
+    text_json = json.dumps(text)
+    case_sensitive_js = "true" if case_sensitive else "false"
+    return f"""
+    (() => {{
+      const selector = {selector_json};
+      const needleRaw = {text_json};
+      const caseSensitive = {case_sensitive_js};
+      const el = document.querySelector(selector);
+      if (!el) {{
+        return {{
+          selector,
+          found: false,
+          reason: "selector_not_found",
+        }};
+      }}
+      const haystackRaw = String(el.innerText || el.textContent || "");
+      const haystack = caseSensitive ? haystackRaw : haystackRaw.toLowerCase();
+      const needle = caseSensitive ? String(needleRaw) : String(needleRaw).toLowerCase();
+      return {{
+        selector,
+        found: haystack.includes(needle),
+      }};
+    }})()
+    """
+
+
+def _poll_interval_seconds(value: float) -> float:
+    return max(MIN_POLL_INTERVAL_SECONDS, min(float(value), MAX_POLL_INTERVAL_SECONDS))
+
+
+def _waited_ms(start: float, now: float) -> int:
+    return int(max(0.0, now - start) * 1000)
 
 
 async def ensure_observers(browser: BridgeBrowser) -> None:
@@ -527,6 +598,218 @@ async def wait_for_selector(
     )
     if error and not found:
         payload["error"] = error
+    return payload
+
+
+async def wait_for_url(
+    browser: BridgeBrowser,
+    *,
+    url_contains: str | None = None,
+    url_regex: str | None = None,
+    timeout_seconds: float = 10.0,
+    poll_interval_seconds: float = 0.2,
+) -> dict[str, Any]:
+    if not (url_contains or url_regex):
+        raise ValueError("Provide url_contains or url_regex.")
+
+    compiled_regex: re.Pattern[str] | None = None
+    if url_regex:
+        compiled_regex = re.compile(url_regex)
+
+    timeout = max(0.1, float(timeout_seconds))
+    poll_interval = _poll_interval_seconds(poll_interval_seconds)
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+
+    matched = False
+    page: dict[str, Any] = {"url": "", "title": ""}
+    while True:
+        page = await get_url_and_title(browser)
+        current_url = str(page.get("url", ""))
+        contains_match = bool(url_contains and url_contains in current_url)
+        regex_match = bool(compiled_regex and compiled_regex.search(current_url))
+        matched = contains_match or regex_match
+        now = loop.time()
+        if matched or now - started_at >= timeout:
+            waited_ms = _waited_ms(started_at, now)
+            break
+        await asyncio.sleep(poll_interval)
+
+    payload = dict(page)
+    payload.update(
+        {
+            "matched": matched,
+            "url_contains": url_contains,
+            "url_regex": url_regex,
+            "timeout_seconds": timeout_seconds,
+            "poll_interval_seconds": poll_interval,
+            "waited_ms": waited_ms,
+        }
+    )
+    if not matched:
+        payload["error"] = "Timed out waiting for URL match."
+    return payload
+
+
+async def wait_for_text(
+    browser: BridgeBrowser,
+    *,
+    text: str,
+    selector: str = "body",
+    case_sensitive: bool = False,
+    timeout_seconds: float = 10.0,
+    poll_interval_seconds: float = 0.2,
+) -> dict[str, Any]:
+    if not text:
+        raise ValueError("text must not be empty.")
+
+    script = _text_presence_script(selector, text, case_sensitive)
+    timeout = max(0.1, float(timeout_seconds))
+    poll_interval = _poll_interval_seconds(poll_interval_seconds)
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+
+    found = False
+    reason: str | None = None
+    while True:
+        result = normalize_evaluate_payload(await browser.evaluate(script))
+        if isinstance(result, dict):
+            found = bool(result.get("found"))
+            reason_raw = result.get("reason")
+            reason = str(reason_raw) if reason_raw is not None else None
+        else:
+            found = bool(result)
+            reason = None
+
+        now = loop.time()
+        if found or now - started_at >= timeout:
+            waited_ms = _waited_ms(started_at, now)
+            break
+        await asyncio.sleep(poll_interval)
+
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "found": found,
+            "text": text,
+            "selector": selector,
+            "case_sensitive": case_sensitive,
+            "timeout_seconds": timeout_seconds,
+            "poll_interval_seconds": poll_interval,
+            "waited_ms": waited_ms,
+        }
+    )
+    if not found:
+        payload["error"] = reason or "Timed out waiting for text."
+    return payload
+
+
+async def wait_for_function(
+    browser: BridgeBrowser,
+    *,
+    script: str,
+    timeout_seconds: float = 10.0,
+    poll_interval_seconds: float = 0.2,
+) -> dict[str, Any]:
+    if not script.strip():
+        raise ValueError("script must not be empty.")
+
+    timeout = max(0.1, float(timeout_seconds))
+    poll_interval = _poll_interval_seconds(poll_interval_seconds)
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+
+    truthy = False
+    last_result: Any = None
+    last_error: str | None = None
+    while True:
+        try:
+            last_result = normalize_evaluate_payload(await browser.evaluate(script))
+            truthy = bool(last_result)
+            last_error = None
+        except Exception as exc:  # noqa: BLE001
+            truthy = False
+            last_result = None
+            last_error = str(exc)
+
+        now = loop.time()
+        if truthy or now - started_at >= timeout:
+            waited_ms = _waited_ms(started_at, now)
+            break
+        await asyncio.sleep(poll_interval)
+
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "truthy": truthy,
+            "result": last_result,
+            "timeout_seconds": timeout_seconds,
+            "poll_interval_seconds": poll_interval,
+            "waited_ms": waited_ms,
+        }
+    )
+    if not truthy and last_error:
+        payload["error"] = last_error
+    elif not truthy:
+        payload["error"] = "Timed out waiting for function result."
+    return payload
+
+
+async def wait_for_network_idle(
+    browser: BridgeBrowser,
+    *,
+    idle_ms: int = 500,
+    timeout_seconds: float = 10.0,
+    max_inflight: int = 0,
+    poll_interval_seconds: float = 0.2,
+) -> dict[str, Any]:
+    await ensure_observers(browser)
+    idle_target = max(0, int(idle_ms))
+    allowed_inflight = max(0, int(max_inflight))
+    timeout = max(0.1, float(timeout_seconds))
+    poll_interval = _poll_interval_seconds(poll_interval_seconds)
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+
+    idle = False
+    in_flight = 0
+    idle_for_ms = 0
+    inflight_peak = 0
+    script = _network_idle_status_script()
+    while True:
+        result = normalize_evaluate_payload(await browser.evaluate(script))
+        if isinstance(result, dict):
+            in_flight = max(0, int(result.get("in_flight", 0)))
+            idle_for_ms = max(0, int(result.get("idle_for_ms", 0)))
+        else:
+            in_flight = 0
+            idle_for_ms = 0
+
+        inflight_peak = max(inflight_peak, in_flight)
+        idle = in_flight <= allowed_inflight and idle_for_ms >= idle_target
+
+        now = loop.time()
+        if idle or now - started_at >= timeout:
+            waited_ms = _waited_ms(started_at, now)
+            break
+        await asyncio.sleep(poll_interval)
+
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "idle": idle,
+            "idle_ms": idle_target,
+            "in_flight": in_flight,
+            "idle_for_ms": idle_for_ms,
+            "max_inflight": allowed_inflight,
+            "inflight_peak": inflight_peak,
+            "timeout_seconds": timeout_seconds,
+            "poll_interval_seconds": poll_interval,
+            "waited_ms": waited_ms,
+        }
+    )
+    if not idle:
+        payload["error"] = "Timed out waiting for network idle."
     return payload
 
 

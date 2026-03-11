@@ -1,10 +1,15 @@
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from browser_bridge_mcp.actions import (
     navigate_back,
     navigate_forward,
     normalize_evaluate_payload,
     reload_page,
+    wait_for_function,
+    wait_for_network_idle,
+    wait_for_text,
+    wait_for_url,
 )
 
 
@@ -38,6 +43,19 @@ class _FakeBrowser:
 
     async def reload(self, *, ignore_cache: bool = False) -> None:
         self.reload_ignore_cache = ignore_cache
+
+
+class _FakeEvaluateBrowser:
+    def __init__(self, results: list[object]) -> None:
+        self._results = list(results)
+
+    async def evaluate(self, _script: str):
+        if not self._results:
+            raise AssertionError("No scripted evaluate result available.")
+        result = self._results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 class NormalizeEvaluatePayloadTest(unittest.TestCase):
@@ -101,6 +119,101 @@ class NavigationActionsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["reloaded"])
         self.assertTrue(payload["ignore_cache"])
         self.assertTrue(browser.reload_ignore_cache)
+
+
+class WaitActionsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_wait_for_url_matches_substring(self) -> None:
+        with patch(
+            "browser_bridge_mcp.actions.get_url_and_title",
+            new=AsyncMock(
+                side_effect=[
+                    {"url": "https://example.com/login", "title": "Login"},
+                    {"url": "https://example.com/dashboard", "title": "Dashboard"},
+                ]
+            ),
+        ):
+            payload = await wait_for_url(
+                object(),
+                url_contains="dashboard",
+                timeout_seconds=0.3,
+                poll_interval_seconds=0.01,
+            )
+        self.assertTrue(payload["matched"])
+        self.assertEqual(payload["url"], "https://example.com/dashboard")
+
+    async def test_wait_for_url_timeout_returns_error(self) -> None:
+        with patch(
+            "browser_bridge_mcp.actions.get_url_and_title",
+            new=AsyncMock(return_value={"url": "https://example.com/login", "title": "Login"}),
+        ):
+            payload = await wait_for_url(
+                object(),
+                url_contains="dashboard",
+                timeout_seconds=0.12,
+                poll_interval_seconds=0.01,
+            )
+        self.assertFalse(payload["matched"])
+        self.assertIn("error", payload)
+
+    async def test_wait_for_text_eventually_finds_text(self) -> None:
+        browser = _FakeEvaluateBrowser(
+            [
+                {"found": False},
+                {"found": True},
+            ]
+        )
+        with patch(
+            "browser_bridge_mcp.actions.get_url_and_title",
+            new=AsyncMock(return_value={"url": "https://example.com", "title": "Home"}),
+        ):
+            payload = await wait_for_text(
+                browser,
+                text="Ready",
+                selector="#status",
+                timeout_seconds=0.3,
+                poll_interval_seconds=0.01,
+            )
+        self.assertTrue(payload["found"])
+        self.assertEqual(payload["selector"], "#status")
+
+    async def test_wait_for_function_eventually_truthy(self) -> None:
+        browser = _FakeEvaluateBrowser([0, "", {"ok": True}])
+        with patch(
+            "browser_bridge_mcp.actions.get_url_and_title",
+            new=AsyncMock(return_value={"url": "https://example.com", "title": "Home"}),
+        ):
+            payload = await wait_for_function(
+                browser,
+                script="window.__ready",
+                timeout_seconds=0.3,
+                poll_interval_seconds=0.01,
+            )
+        self.assertTrue(payload["truthy"])
+        self.assertEqual(payload["result"], {"ok": True})
+
+    async def test_wait_for_network_idle_returns_idle_state(self) -> None:
+        browser = _FakeEvaluateBrowser(
+            [
+                {"in_flight": 2, "idle_for_ms": 120},
+                {"in_flight": 0, "idle_for_ms": 650},
+            ]
+        )
+        with (
+            patch("browser_bridge_mcp.actions.ensure_observers", new=AsyncMock()),
+            patch(
+                "browser_bridge_mcp.actions.get_url_and_title",
+                new=AsyncMock(return_value={"url": "https://example.com", "title": "Home"}),
+            ),
+        ):
+            payload = await wait_for_network_idle(
+                browser,
+                idle_ms=500,
+                timeout_seconds=0.3,
+                max_inflight=0,
+                poll_interval_seconds=0.01,
+            )
+        self.assertTrue(payload["idle"])
+        self.assertEqual(payload["inflight_peak"], 2)
 
 
 if __name__ == "__main__":

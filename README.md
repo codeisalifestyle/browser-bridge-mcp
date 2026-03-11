@@ -161,6 +161,10 @@ Client config for this mode:
 - `browser_scroll`
 - `browser_wait`
 - `browser_wait_for_selector`
+- `browser_wait_for_url`
+- `browser_wait_for_text`
+- `browser_wait_for_function`
+- `browser_wait_for_network_idle`
 - `browser_html`
 - `browser_console_messages`
 - `browser_network_requests`
@@ -171,7 +175,7 @@ Client config for this mode:
 
 - Roadmap: `docs/roadmap.md`
 - Navigation helpers: completed (PRD removed)
-- PRD (advanced wait primitives): `docs/prd-wait-primitives.md`
+- Advanced wait primitives: completed (PRD removed)
 - PRD (tab management): `docs/prd-tab-management.md`
 - PRD (policy and guardrails): `docs/prd-policy-guardrails.md`
 - PRD (dialog/upload/download): `docs/prd-dialog-upload-download.md`
