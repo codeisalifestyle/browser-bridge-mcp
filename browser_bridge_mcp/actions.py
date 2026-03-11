@@ -669,6 +669,54 @@ async def get_downloads(
     return payload
 
 
+async def start_network_capture(
+    browser: BridgeBrowser,
+    *,
+    max_entries: int = 2000,
+    include_headers: bool = True,
+    include_post_data: bool = False,
+    url_regex: str | None = None,
+) -> dict[str, Any]:
+    status = await browser.network_capture_start(
+        max_entries=max_entries,
+        include_headers=include_headers,
+        include_post_data=include_post_data,
+        url_regex=url_regex,
+    )
+    status["started"] = True
+    return status
+
+
+async def get_network_capture(
+    browser: BridgeBrowser,
+    *,
+    limit: int = 200,
+    clear: bool = False,
+    only_failures: bool = False,
+) -> dict[str, Any]:
+    payload = await browser.network_capture_get(
+        limit=limit,
+        clear=clear,
+        only_failures=only_failures,
+    )
+    payload["rows"] = payload.get("rows", [])
+    return payload
+
+
+async def stop_network_capture(
+    browser: BridgeBrowser,
+    *,
+    clear: bool = False,
+) -> dict[str, Any]:
+    payload = await browser.network_capture_stop(clear=clear)
+    payload["stopped"] = True
+    return payload
+
+
+async def network_capture_status(browser: BridgeBrowser) -> dict[str, Any]:
+    return await browser.network_capture_status()
+
+
 async def get_cookies(browser: BridgeBrowser) -> dict[str, Any]:
     cookies = await browser.get_cookies()
     return {

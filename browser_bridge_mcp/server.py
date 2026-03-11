@@ -30,6 +30,7 @@ from .actions import (
     navigate_back,
     navigate_forward,
     navigate_to,
+    network_capture_status,
     new_tab,
     normalize_evaluate_payload,
     query_selector,
@@ -41,6 +42,8 @@ from .actions import (
     set_storage,
     scroll_page,
     snapshot_interactive,
+    start_network_capture,
+    stop_network_capture,
     switch_tab,
     take_screenshot,
     type_into_selector,
@@ -50,6 +53,7 @@ from .actions import (
     wait_for_text,
     wait_for_url,
     wait_seconds as wait_for_seconds,
+    get_network_capture,
 )
 from .runtime import BrowserSessionManager
 
@@ -600,6 +604,68 @@ def create_server(
                 limit=limit,
                 clear=clear,
             ),
+        )
+
+    @mcp.tool(name="browser_network_capture_start", description="Start CDP-level network capture.")
+    async def browser_network_capture_start(
+        session_id: str,
+        max_entries: int = 2000,
+        include_headers: bool = True,
+        include_post_data: bool = False,
+        url_regex: str | None = None,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_network_capture_start",
+            operation=lambda browser: start_network_capture(
+                browser,
+                max_entries=max_entries,
+                include_headers=include_headers,
+                include_post_data=include_post_data,
+                url_regex=url_regex,
+            ),
+        )
+
+    @mcp.tool(name="browser_network_capture_get", description="Read CDP-level network capture rows.")
+    async def browser_network_capture_get(
+        session_id: str,
+        limit: int = 200,
+        clear: bool = False,
+        only_failures: bool = False,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_network_capture_get",
+            operation=lambda browser: get_network_capture(
+                browser,
+                limit=limit,
+                clear=clear,
+                only_failures=only_failures,
+            ),
+        )
+
+    @mcp.tool(name="browser_network_capture_stop", description="Stop CDP-level network capture.")
+    async def browser_network_capture_stop(
+        session_id: str,
+        clear: bool = False,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_network_capture_stop",
+            operation=lambda browser: stop_network_capture(
+                browser,
+                clear=clear,
+            ),
+        )
+
+    @mcp.tool(name="browser_network_capture_status", description="Get CDP-level network capture status.")
+    async def browser_network_capture_status_tool(
+        session_id: str,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_network_capture_status",
+            operation=network_capture_status,
         )
 
     @mcp.tool(name="browser_downloads", description="Read captured download metadata.")

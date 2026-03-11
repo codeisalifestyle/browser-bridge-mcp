@@ -178,6 +178,10 @@ Client config for this mode:
 - `browser_html`
 - `browser_console_messages`
 - `browser_network_requests`
+- `browser_network_capture_start`
+- `browser_network_capture_get`
+- `browser_network_capture_stop`
+- `browser_network_capture_status`
 - `browser_downloads`
 - `browser_cookies_get`
 - `browser_cookies_set`
@@ -198,7 +202,7 @@ Client config for this mode:
 - Policy and guardrails: completed (PRD removed)
 - Dialog/upload/download: completed (PRD removed)
 - Cookie/storage management: completed (PRD removed)
-- PRD (CDP network capture): `docs/prd-network-cdp-capture.md`
+- CDP network capture: completed (PRD removed)
 - PRD (session trace + replay): `docs/prd-session-trace-replay.md`
 
 ## Typical flow

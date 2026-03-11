@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,19 @@ class BridgeBrowser:
         self._download_will_begin_handler: Any = None
         self._download_progress_handler: Any = None
         self._download_dir: str | None = None
+        self._network_capture_enabled: bool = False
+        self._network_capture_max_entries: int = 2000
+        self._network_capture_include_headers: bool = True
+        self._network_capture_include_post_data: bool = False
+        self._network_capture_url_regex: str | None = None
+        self._network_capture_compiled_regex: re.Pattern[str] | None = None
+        self._network_capture_rows: dict[str, dict[str, Any]] = {}
+        self._network_capture_order: list[str] = []
+        self._network_capture_handler_tab: Any = None
+        self._network_capture_request_handler: Any = None
+        self._network_capture_response_handler: Any = None
+        self._network_capture_failed_handler: Any = None
+        self._network_capture_finished_handler: Any = None
 
     async def __aenter__(self) -> "BridgeBrowser":
         await self.start()
@@ -149,6 +163,19 @@ class BridgeBrowser:
             self._download_will_begin_handler = None
             self._download_progress_handler = None
             self._download_dir = None
+            self._network_capture_enabled = False
+            self._network_capture_max_entries = 2000
+            self._network_capture_include_headers = True
+            self._network_capture_include_post_data = False
+            self._network_capture_url_regex = None
+            self._network_capture_compiled_regex = None
+            self._network_capture_rows = {}
+            self._network_capture_order = []
+            self._network_capture_handler_tab = None
+            self._network_capture_request_handler = None
+            self._network_capture_response_handler = None
+            self._network_capture_failed_handler = None
+            self._network_capture_finished_handler = None
 
     async def _inject_stealth_script(self) -> None:
         script = """
@@ -556,6 +583,270 @@ class BridgeBrowser:
         if clear:
             self._download_rows.clear()
             self._download_order.clear()
+        return {
+            "returned": len(rows),
+            "total_available": total_available,
+            "rows": rows,
+        }
+
+    @staticmethod
+    def _normalize_headers(headers: Any) -> dict[str, str]:
+        if isinstance(headers, dict):
+            return {str(key): str(value) for key, value in headers.items()}
+        if hasattr(headers, "items"):
+            try:
+                return {str(key): str(value) for key, value in headers.items()}
+            except Exception:
+                return {}
+        return {}
+
+    def _network_capture_matches(self, url: str) -> bool:
+        if self._network_capture_compiled_regex is None:
+            return True
+        return bool(self._network_capture_compiled_regex.search(url))
+
+    def _upsert_network_capture_row(self, request_id: str, updates: dict[str, Any]) -> None:
+        existing = self._network_capture_rows.get(request_id)
+        if existing is None:
+            existing = {
+                "request_id": request_id,
+                "url": "",
+                "method": "GET",
+                "resource_type": "",
+                "status": None,
+                "ok": None,
+                "failed": False,
+                "failure_text": None,
+                "ts_start": None,
+                "ts_end": None,
+                "duration_ms": None,
+                "in_progress": True,
+                "from_cache": None,
+                "initiator": "",
+            }
+            self._network_capture_rows[request_id] = existing
+            self._network_capture_order.append(request_id)
+
+        existing.update(updates)
+        if len(self._network_capture_order) > self._network_capture_max_entries:
+            stale_request_id = self._network_capture_order.pop(0)
+            self._network_capture_rows.pop(stale_request_id, None)
+
+    async def _remove_network_capture_handlers(self) -> None:
+        if self._network_capture_handler_tab is None:
+            return
+        try:
+            if self._network_capture_request_handler is not None:
+                self._network_capture_handler_tab.remove_handler(
+                    self._cdp_network.RequestWillBeSent,
+                    self._network_capture_request_handler,
+                )
+            if self._network_capture_response_handler is not None:
+                self._network_capture_handler_tab.remove_handler(
+                    self._cdp_network.ResponseReceived,
+                    self._network_capture_response_handler,
+                )
+            if self._network_capture_failed_handler is not None:
+                self._network_capture_handler_tab.remove_handler(
+                    self._cdp_network.LoadingFailed,
+                    self._network_capture_failed_handler,
+                )
+            if self._network_capture_finished_handler is not None:
+                self._network_capture_handler_tab.remove_handler(
+                    self._cdp_network.LoadingFinished,
+                    self._network_capture_finished_handler,
+                )
+            await self._network_capture_handler_tab.send(self._cdp_network.disable())
+        except Exception:
+            pass
+        finally:
+            self._network_capture_handler_tab = None
+            self._network_capture_request_handler = None
+            self._network_capture_response_handler = None
+            self._network_capture_failed_handler = None
+            self._network_capture_finished_handler = None
+
+    async def _ensure_network_capture_handlers(self) -> None:
+        if not self.tab:
+            raise RuntimeError("Browser not started")
+        if not self._network_capture_enabled:
+            return
+        tab = self.tab
+        if self._network_capture_handler_tab is tab:
+            return
+
+        await self._remove_network_capture_handlers()
+        await tab.send(self._cdp_network.enable())
+
+        async def _on_request(event: Any) -> None:
+            request_id = str(getattr(event, "request_id", "") or "")
+            request = getattr(event, "request", None)
+            url = str(getattr(request, "url", "") or "")
+            if not request_id or not url or not self._network_capture_matches(url):
+                return
+            updates: dict[str, Any] = {
+                "url": url,
+                "method": str(getattr(request, "method", "GET") or "GET"),
+                "resource_type": str(getattr(event, "type_", "") or ""),
+                "initiator": str(getattr(getattr(event, "initiator", None), "type_", "") or ""),
+                "ts_start": float(getattr(event, "timestamp", 0.0) or 0.0),
+                "in_progress": True,
+                "failed": False,
+                "failure_text": None,
+            }
+            if self._network_capture_include_headers:
+                updates["request_headers"] = self._normalize_headers(
+                    getattr(request, "headers", {})
+                )
+            if self._network_capture_include_post_data:
+                updates["post_data"] = str(getattr(request, "post_data", "") or "")
+            self._upsert_network_capture_row(request_id, updates)
+
+        async def _on_response(event: Any) -> None:
+            request_id = str(getattr(event, "request_id", "") or "")
+            response = getattr(event, "response", None)
+            url = str(getattr(response, "url", "") or "")
+            if not request_id:
+                return
+            if request_id not in self._network_capture_rows and not self._network_capture_matches(url):
+                return
+            status = int(getattr(response, "status", 0) or 0)
+            updates: dict[str, Any] = {
+                "url": url or self._network_capture_rows.get(request_id, {}).get("url", ""),
+                "status": status,
+                "ok": 200 <= status < 400,
+                "resource_type": str(getattr(event, "type_", "") or ""),
+                "from_cache": bool(getattr(response, "from_disk_cache", False))
+                or bool(getattr(response, "from_prefetch_cache", False))
+                or bool(getattr(response, "from_service_worker", False)),
+            }
+            if self._network_capture_include_headers:
+                updates["response_headers"] = self._normalize_headers(
+                    getattr(response, "headers", {})
+                )
+            self._upsert_network_capture_row(request_id, updates)
+
+        async def _on_loading_finished(event: Any) -> None:
+            request_id = str(getattr(event, "request_id", "") or "")
+            if not request_id or request_id not in self._network_capture_rows:
+                return
+            timestamp = float(getattr(event, "timestamp", 0.0) or 0.0)
+            start = self._network_capture_rows[request_id].get("ts_start")
+            duration_ms = (
+                int(max(0.0, (timestamp - float(start)) * 1000))
+                if isinstance(start, (int, float))
+                else None
+            )
+            self._upsert_network_capture_row(
+                request_id,
+                {
+                    "ts_end": timestamp,
+                    "duration_ms": duration_ms,
+                    "in_progress": False,
+                },
+            )
+
+        async def _on_loading_failed(event: Any) -> None:
+            request_id = str(getattr(event, "request_id", "") or "")
+            if not request_id or request_id not in self._network_capture_rows:
+                return
+            timestamp = float(getattr(event, "timestamp", 0.0) or 0.0)
+            start = self._network_capture_rows[request_id].get("ts_start")
+            duration_ms = (
+                int(max(0.0, (timestamp - float(start)) * 1000))
+                if isinstance(start, (int, float))
+                else None
+            )
+            self._upsert_network_capture_row(
+                request_id,
+                {
+                    "ts_end": timestamp,
+                    "duration_ms": duration_ms,
+                    "failed": True,
+                    "ok": False,
+                    "failure_text": str(getattr(event, "error_text", "") or ""),
+                    "in_progress": False,
+                },
+            )
+
+        tab.add_handler(self._cdp_network.RequestWillBeSent, _on_request)
+        tab.add_handler(self._cdp_network.ResponseReceived, _on_response)
+        tab.add_handler(self._cdp_network.LoadingFinished, _on_loading_finished)
+        tab.add_handler(self._cdp_network.LoadingFailed, _on_loading_failed)
+        self._network_capture_handler_tab = tab
+        self._network_capture_request_handler = _on_request
+        self._network_capture_response_handler = _on_response
+        self._network_capture_finished_handler = _on_loading_finished
+        self._network_capture_failed_handler = _on_loading_failed
+
+    async def network_capture_start(
+        self,
+        *,
+        max_entries: int = 2000,
+        include_headers: bool = True,
+        include_post_data: bool = False,
+        url_regex: str | None = None,
+    ) -> dict[str, Any]:
+        self._network_capture_max_entries = max(100, min(int(max_entries), 10_000))
+        self._network_capture_include_headers = bool(include_headers)
+        self._network_capture_include_post_data = bool(include_post_data)
+        self._network_capture_url_regex = url_regex
+        self._network_capture_compiled_regex = re.compile(url_regex) if url_regex else None
+        self._network_capture_rows.clear()
+        self._network_capture_order.clear()
+        self._network_capture_enabled = True
+        await self._ensure_network_capture_handlers()
+        return await self.network_capture_status()
+
+    async def network_capture_stop(self, *, clear: bool = False) -> dict[str, Any]:
+        self._network_capture_enabled = False
+        await self._remove_network_capture_handlers()
+        total_available = len(self._network_capture_order)
+        if clear:
+            self._network_capture_rows.clear()
+            self._network_capture_order.clear()
+        return {
+            "stopped": True,
+            "total_available": total_available,
+            "cleared": bool(clear),
+        }
+
+    async def network_capture_status(self) -> dict[str, Any]:
+        if self._network_capture_enabled:
+            await self._ensure_network_capture_handlers()
+        return {
+            "enabled": self._network_capture_enabled,
+            "max_entries": self._network_capture_max_entries,
+            "include_headers": self._network_capture_include_headers,
+            "include_post_data": self._network_capture_include_post_data,
+            "url_regex": self._network_capture_url_regex,
+            "total_available": len(self._network_capture_order),
+        }
+
+    async def network_capture_get(
+        self,
+        *,
+        limit: int = 200,
+        clear: bool = False,
+        only_failures: bool = False,
+    ) -> dict[str, Any]:
+        if self._network_capture_enabled:
+            await self._ensure_network_capture_handlers()
+
+        ordered_rows = [
+            dict(self._network_capture_rows[request_id])
+            for request_id in self._network_capture_order
+            if request_id in self._network_capture_rows
+        ]
+        if only_failures:
+            ordered_rows = [row for row in ordered_rows if bool(row.get("failed"))]
+
+        total_available = len(ordered_rows)
+        resolved_limit = max(1, min(int(limit), 2000))
+        rows = ordered_rows[-resolved_limit:]
+        if clear:
+            self._network_capture_rows.clear()
+            self._network_capture_order.clear()
         return {
             "returned": len(rows),
             "total_available": total_available,

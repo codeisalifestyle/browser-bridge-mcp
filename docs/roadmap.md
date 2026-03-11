@@ -47,10 +47,10 @@ This roadmap turns the proposed feature set into a delivery plan that balances q
 
 ### Phase 3: Deep observability (3-5 weeks)
 
-7. CDP-level network capture
+7. CDP-level network capture (completed)
    - Capture request/response metadata from browser protocol events.
    - Value: richer diagnostics than in-page fetch/xhr hooks.
-   - PRD: `docs/prd-network-cdp-capture.md`
+   - Completed with tests; PRD removed per completion workflow.
 
 ### Phase 4: Reproducibility platform (4-6 weeks)
 

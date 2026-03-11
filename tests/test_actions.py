@@ -10,6 +10,7 @@ from browser_bridge_mcp.actions import (
     close_tab,
     current_tab,
     get_cookies,
+    get_network_capture,
     get_downloads,
     get_storage,
     handle_dialog,
@@ -18,17 +19,20 @@ from browser_bridge_mcp.actions import (
     navigate_forward,
     new_tab,
     normalize_evaluate_payload,
+    start_network_capture,
     reload_page,
     save_cookies,
     set_cookies,
     set_download_dir,
     set_file_input,
     set_storage,
+    stop_network_capture,
     switch_tab,
     wait_for_function,
     wait_for_network_idle,
     wait_for_text,
     wait_for_url,
+    network_capture_status,
 )
 
 
@@ -242,6 +246,65 @@ class _FakeCookieStorageBrowser:
     async def clear_cookies(self, *, domain: str | None = None) -> int:
         self.clear_cookies_domain = domain
         return 1
+
+
+class _FakeNetworkCaptureBrowser:
+    def __init__(self) -> None:
+        self.start_args: tuple[int, bool, bool, str | None] | None = None
+        self.get_args: tuple[int, bool, bool] | None = None
+        self.stop_args: tuple[bool] | None = None
+        self.status_calls = 0
+
+    async def network_capture_start(
+        self,
+        *,
+        max_entries: int = 2000,
+        include_headers: bool = True,
+        include_post_data: bool = False,
+        url_regex: str | None = None,
+    ) -> dict[str, object]:
+        self.start_args = (max_entries, include_headers, include_post_data, url_regex)
+        return {
+            "enabled": True,
+            "max_entries": max_entries,
+            "include_headers": include_headers,
+            "include_post_data": include_post_data,
+            "url_regex": url_regex,
+            "total_available": 0,
+        }
+
+    async def network_capture_get(
+        self,
+        *,
+        limit: int = 200,
+        clear: bool = False,
+        only_failures: bool = False,
+    ) -> dict[str, object]:
+        self.get_args = (limit, clear, only_failures)
+        return {
+            "returned": 1,
+            "total_available": 1,
+            "rows": [{"request_id": "1", "failed": False}],
+        }
+
+    async def network_capture_stop(self, *, clear: bool = False) -> dict[str, object]:
+        self.stop_args = (clear,)
+        return {
+            "stopped": True,
+            "total_available": 1,
+            "cleared": clear,
+        }
+
+    async def network_capture_status(self) -> dict[str, object]:
+        self.status_calls += 1
+        return {
+            "enabled": True,
+            "max_entries": 2000,
+            "include_headers": True,
+            "include_post_data": False,
+            "url_regex": None,
+            "total_available": 1,
+        }
 
 
 class NormalizeEvaluatePayloadTest(unittest.TestCase):
@@ -477,6 +540,39 @@ class DialogUploadDownloadActionsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["returned"], 1)
         self.assertEqual(payload["rows"][0]["guid"], "dl-1")
         self.assertEqual(browser.download_query_args, (10, True))
+
+
+class NetworkCaptureActionsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_start_network_capture_returns_started(self) -> None:
+        browser = _FakeNetworkCaptureBrowser()
+        payload = await start_network_capture(
+            browser,
+            max_entries=1000,
+            include_headers=False,
+            include_post_data=True,
+            url_regex="example",
+        )
+        self.assertTrue(payload["started"])
+        self.assertEqual(browser.start_args, (1000, False, True, "example"))
+
+    async def test_get_network_capture_returns_rows(self) -> None:
+        browser = _FakeNetworkCaptureBrowser()
+        payload = await get_network_capture(browser, limit=50, clear=True, only_failures=False)
+        self.assertEqual(payload["returned"], 1)
+        self.assertEqual(payload["rows"][0]["request_id"], "1")
+        self.assertEqual(browser.get_args, (50, True, False))
+
+    async def test_stop_network_capture_returns_stopped(self) -> None:
+        browser = _FakeNetworkCaptureBrowser()
+        payload = await stop_network_capture(browser, clear=True)
+        self.assertTrue(payload["stopped"])
+        self.assertEqual(browser.stop_args, (True,))
+
+    async def test_network_capture_status_passthrough(self) -> None:
+        browser = _FakeNetworkCaptureBrowser()
+        payload = await network_capture_status(browser)
+        self.assertTrue(payload["enabled"])
+        self.assertEqual(browser.status_calls, 1)
 
 
 class CookieStorageActionsTest(unittest.IsolatedAsyncioTestCase):
