@@ -19,6 +19,7 @@ from .cookies import load_cookie_file
 READ_ONLY_BLOCKED_ACTIONS = {
     "browser_click",
     "browser_type",
+    "browser_set_file_input",
     "browser_tab_new",
     "browser_tab_close",
 }

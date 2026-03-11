@@ -35,10 +35,10 @@ This roadmap turns the proposed feature set into a delivery plan that balances q
    - Value: safer automation in shared or production-like contexts.
    - Completed with tests; PRD removed per completion workflow.
 
-5. Dialog, upload, and download support
+5. Dialog, upload, and download support (completed)
    - Handle alerts/prompts, file inputs, and download tracking.
    - Value: unlocks common real-world test flows.
-   - PRD: `docs/prd-dialog-upload-download.md`
+   - Completed with tests; PRD removed per completion workflow.
 
 6. Cookie and storage management
    - First-class cookie/localStorage/sessionStorage tools.

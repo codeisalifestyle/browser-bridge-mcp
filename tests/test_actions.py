@@ -4,12 +4,16 @@ from unittest.mock import AsyncMock, patch
 from browser_bridge_mcp.actions import (
     close_tab,
     current_tab,
+    get_downloads,
+    handle_dialog,
     list_tabs,
     navigate_back,
     navigate_forward,
     new_tab,
     normalize_evaluate_payload,
     reload_page,
+    set_download_dir,
+    set_file_input,
     switch_tab,
     wait_for_function,
     wait_for_network_idle,
@@ -143,6 +147,51 @@ class _FakeTabActionBrowser:
             "url": "https://example.com/a",
             "title": "A",
             "active": True,
+        }
+
+
+class _FakeDialogUploadBrowser:
+    def __init__(self) -> None:
+        self.tab = _FakeTab("https://example.com/form")
+        self._title = "Form"
+        self.dialog_args: tuple[bool, str | None, bool] | None = None
+        self.file_input_args: tuple[str, list[str]] | None = None
+        self.download_dir_arg: str | None = None
+        self.download_query_args: tuple[int, bool] | None = None
+
+    async def evaluate(self, script: str):
+        if script == "document.title":
+            return self._title
+        raise AssertionError(f"Unexpected script: {script}")
+
+    async def set_dialog_handler(
+        self,
+        *,
+        accept: bool = True,
+        prompt_text: str | None = None,
+        once: bool = True,
+    ) -> dict[str, object]:
+        self.dialog_args = (accept, prompt_text, once)
+        return {
+            "accept": accept,
+            "prompt_text": prompt_text,
+            "once": once,
+        }
+
+    async def set_file_input(self, *, selector: str, file_paths: list[str]) -> list[str]:
+        self.file_input_args = (selector, file_paths)
+        return list(file_paths)
+
+    async def set_download_dir(self, *, download_dir: str) -> str:
+        self.download_dir_arg = download_dir
+        return download_dir
+
+    async def get_downloads(self, *, limit: int = 100, clear: bool = False) -> dict[str, object]:
+        self.download_query_args = (limit, clear)
+        return {
+            "returned": 1,
+            "total_available": 1,
+            "rows": [{"guid": "dl-1", "state": "completed"}],
         }
 
 
@@ -341,6 +390,44 @@ class TabActionsTest(unittest.IsolatedAsyncioTestCase):
         payload = await current_tab(browser)
         self.assertEqual(payload["tab"]["tab_id"], "tab-a")
         self.assertEqual(payload["url"], "https://example.com/a")
+
+
+class DialogUploadDownloadActionsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_handle_dialog_configures_dialog_behavior(self) -> None:
+        browser = _FakeDialogUploadBrowser()
+        payload = await handle_dialog(browser, accept=False, prompt_text="hello", once=True)
+        self.assertTrue(payload["configured"])
+        self.assertFalse(payload["accept"])
+        self.assertEqual(payload["prompt_text"], "hello")
+        self.assertEqual(browser.dialog_args, (False, "hello", True))
+
+    async def test_set_file_input_reports_uploaded_files(self) -> None:
+        browser = _FakeDialogUploadBrowser()
+        payload = await set_file_input(
+            browser,
+            selector='input[type="file"]',
+            file_paths=["/tmp/a.txt", "/tmp/b.txt"],
+            wait_seconds=0,
+        )
+        self.assertEqual(payload["files_set_count"], 2)
+        self.assertEqual(payload["selector"], 'input[type="file"]')
+        self.assertEqual(
+            browser.file_input_args,
+            ('input[type="file"]', ["/tmp/a.txt", "/tmp/b.txt"]),
+        )
+
+    async def test_set_download_dir_returns_path(self) -> None:
+        browser = _FakeDialogUploadBrowser()
+        payload = await set_download_dir(browser, download_dir="/tmp/downloads")
+        self.assertEqual(payload["download_dir"], "/tmp/downloads")
+        self.assertEqual(browser.download_dir_arg, "/tmp/downloads")
+
+    async def test_get_downloads_returns_rows(self) -> None:
+        browser = _FakeDialogUploadBrowser()
+        payload = await get_downloads(browser, limit=10, clear=True)
+        self.assertEqual(payload["returned"], 1)
+        self.assertEqual(payload["rows"][0]["guid"], "dl-1")
+        self.assertEqual(browser.download_query_args, (10, True))
 
 
 if __name__ == "__main__":

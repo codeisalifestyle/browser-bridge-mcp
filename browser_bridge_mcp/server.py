@@ -17,9 +17,11 @@ from .actions import (
     click_selector,
     current_tab,
     get_console_messages,
+    get_downloads,
     get_network_requests,
     get_page_html,
     get_url_and_title,
+    handle_dialog,
     list_tabs,
     navigate_back,
     navigate_forward,
@@ -28,6 +30,8 @@ from .actions import (
     normalize_evaluate_payload,
     query_selector,
     reload_page,
+    set_download_dir,
+    set_file_input,
     scroll_page,
     snapshot_interactive,
     switch_tab,
@@ -148,6 +152,20 @@ def create_server(
     @mcp.tool(name="session_get_policy", description="Get runtime policy for one session.")
     async def session_get_policy(session_id: str) -> dict[str, Any]:
         return await manager.get_policy(session_id=session_id)
+
+    @mcp.tool(name="session_set_download_dir", description="Set default download directory for one session.")
+    async def session_set_download_dir(
+        session_id: str,
+        download_dir: str,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="session_set_download_dir",
+            operation=lambda browser: set_download_dir(
+                browser,
+                download_dir=download_dir,
+            ),
+        )
 
     @mcp.tool(name="session_stop", description="Stop one session by id.")
     async def session_stop(session_id: str) -> dict[str, Any]:
@@ -369,6 +387,42 @@ def create_server(
             ),
         )
 
+    @mcp.tool(name="browser_handle_dialog", description="Set how the next JavaScript dialog should be handled.")
+    async def browser_handle_dialog(
+        session_id: str,
+        accept: bool = True,
+        prompt_text: str | None = None,
+        once: bool = True,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_handle_dialog",
+            operation=lambda browser: handle_dialog(
+                browser,
+                accept=accept,
+                prompt_text=prompt_text,
+                once=once,
+            ),
+        )
+
+    @mcp.tool(name="browser_set_file_input", description="Attach local files to a file input selector.")
+    async def browser_set_file_input(
+        session_id: str,
+        selector: str,
+        file_paths: list[str],
+        wait_seconds: float = DEFAULT_ACTION_WAIT_SECONDS,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_set_file_input",
+            operation=lambda browser: set_file_input(
+                browser,
+                selector=selector,
+                file_paths=file_paths,
+                wait_seconds=wait_seconds,
+            ),
+        )
+
     @mcp.tool(name="browser_scroll", description="Scroll page, to top, to bottom, or to selector.")
     async def browser_scroll(
         session_id: str,
@@ -535,6 +589,22 @@ def create_server(
             session_id=session_id,
             action_name="browser_network_requests",
             operation=lambda browser: get_network_requests(
+                browser,
+                limit=limit,
+                clear=clear,
+            ),
+        )
+
+    @mcp.tool(name="browser_downloads", description="Read captured download metadata.")
+    async def browser_downloads(
+        session_id: str,
+        limit: int = DEFAULT_EVENT_LIMIT,
+        clear: bool = False,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_downloads",
+            operation=lambda browser: get_downloads(
                 browser,
                 limit=limit,
                 clear=clear,

@@ -146,6 +146,7 @@ Client config for this mode:
 - `session_get`
 - `session_set_policy`
 - `session_get_policy`
+- `session_set_download_dir`
 - `session_stop`
 - `session_stop_all`
 
@@ -165,6 +166,8 @@ Client config for this mode:
 - `browser_query`
 - `browser_click`
 - `browser_type`
+- `browser_handle_dialog`
+- `browser_set_file_input`
 - `browser_scroll`
 - `browser_wait`
 - `browser_wait_for_selector`
@@ -175,6 +178,7 @@ Client config for this mode:
 - `browser_html`
 - `browser_console_messages`
 - `browser_network_requests`
+- `browser_downloads`
 - `browser_take_screenshot`
 - `browser_evaluate`
 
@@ -185,7 +189,7 @@ Client config for this mode:
 - Advanced wait primitives: completed (PRD removed)
 - Tab management: completed (PRD removed)
 - Policy and guardrails: completed (PRD removed)
-- PRD (dialog/upload/download): `docs/prd-dialog-upload-download.md`
+- Dialog/upload/download: completed (PRD removed)
 - PRD (cookie/storage management): `docs/prd-cookie-storage-management.md`
 - PRD (CDP network capture): `docs/prd-network-cdp-capture.md`
 - PRD (session trace + replay): `docs/prd-session-trace-replay.md`

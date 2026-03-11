@@ -532,6 +532,74 @@ async def current_tab(browser: BridgeBrowser) -> dict[str, Any]:
     return payload
 
 
+async def handle_dialog(
+    browser: BridgeBrowser,
+    *,
+    accept: bool = True,
+    prompt_text: str | None = None,
+    once: bool = True,
+) -> dict[str, Any]:
+    config = await browser.set_dialog_handler(
+        accept=accept,
+        prompt_text=prompt_text,
+        once=once,
+    )
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "configured": True,
+            **config,
+        }
+    )
+    return payload
+
+
+async def set_file_input(
+    browser: BridgeBrowser,
+    *,
+    selector: str,
+    file_paths: list[str],
+    wait_seconds: float = DEFAULT_ACTION_WAIT_SECONDS,
+) -> dict[str, Any]:
+    uploaded_paths = await browser.set_file_input(selector=selector, file_paths=file_paths)
+    if wait_seconds > 0:
+        await asyncio.sleep(wait_seconds)
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "selector": selector,
+            "files_set_count": len(uploaded_paths),
+            "file_paths": uploaded_paths,
+        }
+    )
+    return payload
+
+
+async def set_download_dir(
+    browser: BridgeBrowser,
+    *,
+    download_dir: str,
+) -> dict[str, Any]:
+    resolved_dir = await browser.set_download_dir(download_dir=download_dir)
+    payload = await get_url_and_title(browser)
+    payload["download_dir"] = resolved_dir
+    return payload
+
+
+async def get_downloads(
+    browser: BridgeBrowser,
+    *,
+    limit: int = DEFAULT_EVENT_LIMIT,
+    clear: bool = False,
+) -> dict[str, Any]:
+    payload = await browser.get_downloads(
+        limit=clamp_limit(limit, max_limit=MAX_EVENT_LIMIT),
+        clear=clear,
+    )
+    payload["rows"] = payload.get("rows", [])
+    return payload
+
+
 async def snapshot_interactive(browser: BridgeBrowser, *, limit: int) -> dict[str, Any]:
     payload = normalize_evaluate_payload(
         await browser.evaluate(_snapshot_script(clamp_limit(limit)))

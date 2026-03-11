@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any
 
 
@@ -38,6 +39,16 @@ class BridgeBrowser:
         self._cdp_input: Any = None
         self._cdp_page: Any = None
         self._owns_process: bool = False
+        self._dialog_config: dict[str, Any] | None = None
+        self._dialog_events: list[dict[str, Any]] = []
+        self._dialog_handler_tab: Any = None
+        self._dialog_handler: Any = None
+        self._download_rows: dict[str, dict[str, Any]] = {}
+        self._download_order: list[str] = []
+        self._download_handler_tab: Any = None
+        self._download_will_begin_handler: Any = None
+        self._download_progress_handler: Any = None
+        self._download_dir: str | None = None
 
     async def __aenter__(self) -> "BridgeBrowser":
         await self.start()
@@ -128,6 +139,16 @@ class BridgeBrowser:
             self.browser = None
             self.tab = None
             self._owns_process = False
+            self._dialog_config = None
+            self._dialog_events = []
+            self._dialog_handler_tab = None
+            self._dialog_handler = None
+            self._download_rows = {}
+            self._download_order = []
+            self._download_handler_tab = None
+            self._download_will_begin_handler = None
+            self._download_progress_handler = None
+            self._download_dir = None
 
     async def _inject_stealth_script(self) -> None:
         script = """
@@ -358,6 +379,188 @@ class BridgeBrowser:
         if tabs:
             return tabs[0]
         raise RuntimeError("No browser tab is currently available.")
+
+    async def set_dialog_handler(
+        self,
+        *,
+        accept: bool = True,
+        prompt_text: str | None = None,
+        once: bool = True,
+    ) -> dict[str, Any]:
+        if not self.tab:
+            raise RuntimeError("Browser not started")
+        tab = self.tab
+        if self._dialog_handler_tab is not tab:
+            if self._dialog_handler_tab is not None and self._dialog_handler is not None:
+                try:
+                    self._dialog_handler_tab.remove_handler(
+                        self._cdp_page.JavascriptDialogOpening,
+                        self._dialog_handler,
+                    )
+                except Exception:
+                    pass
+
+            async def _on_dialog(event: Any) -> None:
+                config = self._dialog_config
+                if not config:
+                    return
+                should_accept = bool(config.get("accept", True))
+                configured_prompt = config.get("prompt_text")
+                try:
+                    await tab.send(
+                        self._cdp_page.handle_java_script_dialog(
+                            accept=should_accept,
+                            prompt_text=configured_prompt,
+                        )
+                    )
+                except Exception as exc:
+                    logger.debug("Failed to handle JavaScript dialog: %s", exc)
+
+                self._dialog_events.append(
+                    {
+                        "url": str(getattr(event, "url", "") or ""),
+                        "message": str(getattr(event, "message", "") or ""),
+                        "type": str(getattr(event, "type_", "") or ""),
+                        "default_prompt": str(getattr(event, "default_prompt", "") or ""),
+                        "accepted": should_accept,
+                        "prompt_text": configured_prompt,
+                    }
+                )
+                if len(self._dialog_events) > 200:
+                    self._dialog_events = self._dialog_events[-200:]
+                if config.get("once", True):
+                    self._dialog_config = None
+
+            tab.add_handler(self._cdp_page.JavascriptDialogOpening, _on_dialog)
+            self._dialog_handler_tab = tab
+            self._dialog_handler = _on_dialog
+
+        self._dialog_config = {
+            "accept": bool(accept),
+            "prompt_text": prompt_text,
+            "once": bool(once),
+        }
+        return dict(self._dialog_config)
+
+    async def set_file_input(self, *, selector: str, file_paths: list[str]) -> list[str]:
+        if not file_paths:
+            raise ValueError("file_paths must include at least one file path.")
+        element = await self.select_first([selector])
+        if not element:
+            raise RuntimeError(f"No element found for selector: {selector}")
+
+        resolved_paths: list[str] = []
+        for raw_path in file_paths:
+            resolved = Path(raw_path).expanduser()
+            if not resolved.exists():
+                raise FileNotFoundError(f"Upload file not found: {resolved}")
+            resolved_paths.append(str(resolved.resolve()))
+
+        await element.send_file(*resolved_paths)
+        return resolved_paths
+
+    def _upsert_download_row(self, guid: str, updates: dict[str, Any]) -> None:
+        existing = self._download_rows.get(guid)
+        if existing is None:
+            existing = {
+                "guid": guid,
+                "url": "",
+                "suggested_filename": "",
+                "state": "inProgress",
+                "total_bytes": 0.0,
+                "received_bytes": 0.0,
+                "download_dir": self._download_dir,
+            }
+            self._download_rows[guid] = existing
+            self._download_order.append(guid)
+
+        existing.update(updates)
+        if len(self._download_order) > 500:
+            stale_guid = self._download_order.pop(0)
+            self._download_rows.pop(stale_guid, None)
+
+    async def _ensure_download_handlers(self) -> None:
+        if not self.tab:
+            raise RuntimeError("Browser not started")
+        tab = self.tab
+        if self._download_handler_tab is tab:
+            return
+
+        if self._download_handler_tab is not None:
+            try:
+                if self._download_will_begin_handler is not None:
+                    self._download_handler_tab.remove_handler(
+                        self._cdp_page.DownloadWillBegin,
+                        self._download_will_begin_handler,
+                    )
+                if self._download_progress_handler is not None:
+                    self._download_handler_tab.remove_handler(
+                        self._cdp_page.DownloadProgress,
+                        self._download_progress_handler,
+                    )
+            except Exception:
+                pass
+
+        async def _on_download_will_begin(event: Any) -> None:
+            guid = str(getattr(event, "guid", "") or "")
+            if not guid:
+                return
+            filename = str(getattr(event, "suggested_filename", "") or "")
+            row = {
+                "url": str(getattr(event, "url", "") or ""),
+                "suggested_filename": filename,
+                "state": "inProgress",
+                "download_dir": self._download_dir,
+            }
+            if self._download_dir and filename:
+                row["path"] = str(Path(self._download_dir) / filename)
+            self._upsert_download_row(guid, row)
+
+        async def _on_download_progress(event: Any) -> None:
+            guid = str(getattr(event, "guid", "") or "")
+            if not guid:
+                return
+            state = str(getattr(event, "state", "") or "")
+            self._upsert_download_row(
+                guid,
+                {
+                    "state": state,
+                    "total_bytes": float(getattr(event, "total_bytes", 0.0) or 0.0),
+                    "received_bytes": float(getattr(event, "received_bytes", 0.0) or 0.0),
+                    "download_dir": self._download_dir,
+                },
+            )
+
+        tab.add_handler(self._cdp_page.DownloadWillBegin, _on_download_will_begin)
+        tab.add_handler(self._cdp_page.DownloadProgress, _on_download_progress)
+        self._download_handler_tab = tab
+        self._download_will_begin_handler = _on_download_will_begin
+        self._download_progress_handler = _on_download_progress
+
+    async def set_download_dir(self, *, download_dir: str) -> str:
+        if not self.tab:
+            raise RuntimeError("Browser not started")
+        resolved = Path(download_dir).expanduser().resolve()
+        resolved.mkdir(parents=True, exist_ok=True)
+        await self.tab.set_download_path(str(resolved))
+        self._download_dir = str(resolved)
+        await self._ensure_download_handlers()
+        return self._download_dir
+
+    async def get_downloads(self, *, limit: int = 100, clear: bool = False) -> dict[str, Any]:
+        await self._ensure_download_handlers()
+        total_available = len(self._download_order)
+        resolved_limit = max(1, min(int(limit), 500))
+        selected_ids = self._download_order[-resolved_limit:]
+        rows = [dict(self._download_rows[guid]) for guid in selected_ids if guid in self._download_rows]
+        if clear:
+            self._download_rows.clear()
+            self._download_order.clear()
+        return {
+            "returned": len(rows),
+            "total_available": total_available,
+            "rows": rows,
+        }
 
     async def select_first(self, selectors: list[str]) -> Any | None:
         for selector in selectors:
