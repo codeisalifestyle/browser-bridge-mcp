@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "browser-bridge-mcp"
+version = "0.1.0"
+description = "Stealth-capable browser bridge MCP server for nodriver sessions"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Gianluca" }]
+dependencies = [
+  "mcp>=1.26.0",
+  "nodriver>=0.48",
+]
+
+[project.scripts]
+browser-bridge-mcp = "browser_bridge_mcp.server:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["browser_bridge_mcp*"]
