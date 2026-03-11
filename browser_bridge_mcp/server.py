@@ -176,6 +176,61 @@ def create_server(
                 browser,
                 download_dir=download_dir,
             ),
+            action_args={"download_dir": download_dir},
+        )
+
+    @mcp.tool(name="session_trace_start", description="Start recording session action trace.")
+    async def session_trace_start(
+        session_id: str,
+        trace_id: str | None = None,
+        capture_screenshot_on_error: bool = True,
+        capture_html_on_error: bool = False,
+    ) -> dict[str, Any]:
+        return await manager.start_trace(
+            session_id=session_id,
+            trace_id=trace_id,
+            capture_screenshot_on_error=capture_screenshot_on_error,
+            capture_html_on_error=capture_html_on_error,
+        )
+
+    @mcp.tool(name="session_trace_stop", description="Stop recording session action trace.")
+    async def session_trace_stop(session_id: str) -> dict[str, Any]:
+        return await manager.stop_trace(session_id=session_id)
+
+    @mcp.tool(name="session_trace_get", description="Read recorded session trace events.")
+    async def session_trace_get(
+        session_id: str,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        return await manager.get_trace_events(
+            session_id=session_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    @mcp.tool(name="session_trace_export", description="Export recorded trace to a JSON file.")
+    async def session_trace_export(
+        session_id: str,
+        output_path: str,
+    ) -> dict[str, Any]:
+        return await manager.export_trace(
+            session_id=session_id,
+            output_path=output_path,
+        )
+
+    @mcp.tool(name="session_trace_replay", description="Replay a trace file against a session.")
+    async def session_trace_replay(
+        trace_path: str,
+        session_id: str | None = None,
+        stop_on_error: bool = True,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        return await manager.replay_trace(
+            trace_path=trace_path,
+            session_id=session_id,
+            stop_on_error=stop_on_error,
+            dry_run=dry_run,
         )
 
     @mcp.tool(name="session_stop", description="Stop one session by id.")
@@ -223,6 +278,7 @@ def create_server(
                 browser,
                 wait_seconds=wait_seconds,
             ),
+            action_args={"wait_seconds": wait_seconds},
         )
 
     @mcp.tool(name="browser_forward", description="Navigate one step forward in browser history.")
@@ -237,6 +293,7 @@ def create_server(
                 browser,
                 wait_seconds=wait_seconds,
             ),
+            action_args={"wait_seconds": wait_seconds},
         )
 
     @mcp.tool(name="browser_reload", description="Reload the current page.")
@@ -253,6 +310,10 @@ def create_server(
                 wait_seconds=wait_seconds,
                 ignore_cache=ignore_cache,
             ),
+            action_args={
+                "wait_seconds": wait_seconds,
+                "ignore_cache": ignore_cache,
+            },
         )
 
     @mcp.tool(name="browser_tab_list", description="List open tabs and the active tab.")
@@ -263,6 +324,7 @@ def create_server(
             session_id=session_id,
             action_name="browser_tab_list",
             operation=list_tabs,
+            action_args={},
         )
 
     @mcp.tool(name="browser_tab_new", description="Open a new tab and optionally switch to it.")
@@ -300,6 +362,11 @@ def create_server(
                 index=index,
                 wait_seconds=wait_seconds,
             ),
+            action_args={
+                "tab_id": tab_id,
+                "index": index,
+                "wait_seconds": wait_seconds,
+            },
         )
 
     @mcp.tool(name="browser_tab_close", description="Close a tab by tab_id or index.")
@@ -318,6 +385,11 @@ def create_server(
                 index=index,
                 switch_to=switch_to,
             ),
+            action_args={
+                "tab_id": tab_id,
+                "index": index,
+                "switch_to": switch_to,
+            },
         )
 
     @mcp.tool(name="browser_tab_current", description="Get the active tab summary.")
@@ -328,6 +400,7 @@ def create_server(
             session_id=session_id,
             action_name="browser_tab_current",
             operation=current_tab,
+            action_args={},
         )
 
     @mcp.tool(
@@ -342,6 +415,7 @@ def create_server(
             session_id=session_id,
             action_name="browser_snapshot",
             operation=lambda browser: snapshot_interactive(browser, limit=limit),
+            action_args={"limit": limit},
         )
 
     @mcp.tool(name="browser_query", description="Query DOM elements by CSS selector.")
@@ -358,6 +432,10 @@ def create_server(
                 selector=selector,
                 limit=limit,
             ),
+            action_args={
+                "selector": selector,
+                "limit": limit,
+            },
         )
 
     @mcp.tool(name="browser_click", description="Click the first matching selector.")
@@ -374,6 +452,10 @@ def create_server(
                 selector=selector,
                 wait_seconds=wait_seconds,
             ),
+            action_args={
+                "selector": selector,
+                "wait_seconds": wait_seconds,
+            },
         )
 
     @mcp.tool(name="browser_type", description="Type text into an input selector.")
@@ -396,6 +478,13 @@ def create_server(
                 submit=submit,
                 wait_seconds=wait_seconds,
             ),
+            action_args={
+                "selector": selector,
+                "text": text,
+                "clear": clear,
+                "submit": submit,
+                "wait_seconds": wait_seconds,
+            },
         )
 
     @mcp.tool(name="browser_handle_dialog", description="Set how the next JavaScript dialog should be handled.")
@@ -414,6 +503,11 @@ def create_server(
                 prompt_text=prompt_text,
                 once=once,
             ),
+            action_args={
+                "accept": accept,
+                "prompt_text": prompt_text,
+                "once": once,
+            },
         )
 
     @mcp.tool(name="browser_set_file_input", description="Attach local files to a file input selector.")
@@ -432,6 +526,11 @@ def create_server(
                 file_paths=file_paths,
                 wait_seconds=wait_seconds,
             ),
+            action_args={
+                "selector": selector,
+                "file_paths": file_paths,
+                "wait_seconds": wait_seconds,
+            },
         )
 
     @mcp.tool(name="browser_scroll", description="Scroll page, to top, to bottom, or to selector.")
@@ -454,6 +553,13 @@ def create_server(
                 to_bottom=to_bottom,
                 wait_seconds=wait_seconds,
             ),
+            action_args={
+                "selector": selector,
+                "delta_y": delta_y,
+                "to_top": to_top,
+                "to_bottom": to_bottom,
+                "wait_seconds": wait_seconds,
+            },
         )
 
     @mcp.tool(name="browser_wait_for_selector", description="Wait until selector appears or timeout.")
@@ -470,6 +576,10 @@ def create_server(
                 selector=selector,
                 timeout_seconds=timeout_seconds,
             ),
+            action_args={
+                "selector": selector,
+                "timeout_seconds": timeout_seconds,
+            },
         )
 
     @mcp.tool(name="browser_wait_for_url", description="Wait for URL substring or regex match.")
@@ -490,6 +600,12 @@ def create_server(
                 timeout_seconds=timeout_seconds,
                 poll_interval_seconds=poll_interval_seconds,
             ),
+            action_args={
+                "url_contains": url_contains,
+                "url_regex": url_regex,
+                "timeout_seconds": timeout_seconds,
+                "poll_interval_seconds": poll_interval_seconds,
+            },
         )
 
     @mcp.tool(name="browser_wait_for_text", description="Wait until text appears in a selector.")
@@ -512,6 +628,13 @@ def create_server(
                 timeout_seconds=timeout_seconds,
                 poll_interval_seconds=poll_interval_seconds,
             ),
+            action_args={
+                "text": text,
+                "selector": selector,
+                "case_sensitive": case_sensitive,
+                "timeout_seconds": timeout_seconds,
+                "poll_interval_seconds": poll_interval_seconds,
+            },
         )
 
     @mcp.tool(name="browser_wait_for_function", description="Wait for a JavaScript expression to become truthy.")
@@ -530,6 +653,11 @@ def create_server(
                 timeout_seconds=timeout_seconds,
                 poll_interval_seconds=poll_interval_seconds,
             ),
+            action_args={
+                "script": script,
+                "timeout_seconds": timeout_seconds,
+                "poll_interval_seconds": poll_interval_seconds,
+            },
         )
 
     @mcp.tool(name="browser_wait_for_network_idle", description="Wait until in-page network activity is idle.")
@@ -550,6 +678,12 @@ def create_server(
                 max_inflight=max_inflight,
                 poll_interval_seconds=poll_interval_seconds,
             ),
+            action_args={
+                "idle_ms": idle_ms,
+                "timeout_seconds": timeout_seconds,
+                "max_inflight": max_inflight,
+                "poll_interval_seconds": poll_interval_seconds,
+            },
         )
 
     @mcp.tool(name="browser_wait", description="Wait for a number of seconds.")
@@ -561,6 +695,7 @@ def create_server(
             session_id=session_id,
             action_name="browser_wait",
             operation=lambda _: wait_for_seconds(seconds),
+            action_args={"seconds": seconds},
         )
 
     @mcp.tool(name="browser_html", description="Return current page HTML (optionally truncated).")
@@ -572,6 +707,7 @@ def create_server(
             session_id=session_id,
             action_name="browser_html",
             operation=lambda browser: get_page_html(browser, max_chars=max_chars),
+            action_args={"max_chars": max_chars},
         )
 
     @mcp.tool(name="browser_console_messages", description="Read captured in-page console messages.")
@@ -588,6 +724,10 @@ def create_server(
                 limit=limit,
                 clear=clear,
             ),
+            action_args={
+                "limit": limit,
+                "clear": clear,
+            },
         )
 
     @mcp.tool(name="browser_network_requests", description="Read captured fetch/xhr request metadata.")
@@ -604,6 +744,10 @@ def create_server(
                 limit=limit,
                 clear=clear,
             ),
+            action_args={
+                "limit": limit,
+                "clear": clear,
+            },
         )
 
     @mcp.tool(name="browser_network_capture_start", description="Start CDP-level network capture.")
@@ -624,6 +768,12 @@ def create_server(
                 include_post_data=include_post_data,
                 url_regex=url_regex,
             ),
+            action_args={
+                "max_entries": max_entries,
+                "include_headers": include_headers,
+                "include_post_data": include_post_data,
+                "url_regex": url_regex,
+            },
         )
 
     @mcp.tool(name="browser_network_capture_get", description="Read CDP-level network capture rows.")
@@ -642,6 +792,11 @@ def create_server(
                 clear=clear,
                 only_failures=only_failures,
             ),
+            action_args={
+                "limit": limit,
+                "clear": clear,
+                "only_failures": only_failures,
+            },
         )
 
     @mcp.tool(name="browser_network_capture_stop", description="Stop CDP-level network capture.")
@@ -656,6 +811,7 @@ def create_server(
                 browser,
                 clear=clear,
             ),
+            action_args={"clear": clear},
         )
 
     @mcp.tool(name="browser_network_capture_status", description="Get CDP-level network capture status.")
@@ -666,6 +822,7 @@ def create_server(
             session_id=session_id,
             action_name="browser_network_capture_status",
             operation=network_capture_status,
+            action_args={},
         )
 
     @mcp.tool(name="browser_downloads", description="Read captured download metadata.")
@@ -682,6 +839,10 @@ def create_server(
                 limit=limit,
                 clear=clear,
             ),
+            action_args={
+                "limit": limit,
+                "clear": clear,
+            },
         )
 
     @mcp.tool(name="browser_cookies_get", description="Get all cookies visible to current browser context.")
@@ -692,6 +853,7 @@ def create_server(
             session_id=session_id,
             action_name="browser_cookies_get",
             operation=get_cookies,
+            action_args={},
         )
 
     @mcp.tool(name="browser_cookies_set", description="Set cookies into current browser context.")
@@ -708,6 +870,10 @@ def create_server(
                 cookies=cookies,
                 fallback_domain=fallback_domain,
             ),
+            action_args={
+                "cookies": cookies,
+                "fallback_domain": fallback_domain,
+            },
         )
 
     @mcp.tool(name="browser_cookies_save", description="Save current cookies to a JSON file.")
@@ -724,6 +890,10 @@ def create_server(
                 output_path=output_path,
                 wrap_object=wrap_object,
             ),
+            action_args={
+                "output_path": output_path,
+                "wrap_object": wrap_object,
+            },
         )
 
     @mcp.tool(name="browser_cookies_clear", description="Clear cookies (all or by domain).")
@@ -738,6 +908,7 @@ def create_server(
                 browser,
                 domain=domain,
             ),
+            action_args={"domain": domain},
         )
 
     @mcp.tool(name="browser_storage_get", description="Get local/session storage values.")
@@ -752,6 +923,7 @@ def create_server(
                 browser,
                 kind=kind,
             ),
+            action_args={"kind": kind},
         )
 
     @mcp.tool(name="browser_storage_set", description="Set local/session storage key/value entries.")
@@ -770,6 +942,11 @@ def create_server(
                 entries=entries,
                 clear_first=clear_first,
             ),
+            action_args={
+                "kind": kind,
+                "entries": entries,
+                "clear_first": clear_first,
+            },
         )
 
     @mcp.tool(name="browser_storage_clear", description="Clear local/session storage.")
@@ -784,6 +961,7 @@ def create_server(
                 browser,
                 kind=kind,
             ),
+            action_args={"kind": kind},
         )
 
     @mcp.tool(name="browser_take_screenshot", description="Capture a screenshot to disk.")
@@ -802,6 +980,11 @@ def create_server(
                 full_page=full_page,
                 image_format=image_format,
             ),
+            action_args={
+                "output_path": output_path,
+                "full_page": full_page,
+                "image_format": image_format,
+            },
         )
 
     @mcp.tool(name="browser_evaluate", description="Evaluate JavaScript in current page.")
@@ -817,6 +1000,7 @@ def create_server(
             session_id=session_id,
             action_name="browser_evaluate",
             operation=_operation,
+            action_args={"script": script},
         )
 
     return mcp

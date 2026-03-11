@@ -147,6 +147,11 @@ Client config for this mode:
 - `session_set_policy`
 - `session_get_policy`
 - `session_set_download_dir`
+- `session_trace_start`
+- `session_trace_stop`
+- `session_trace_get`
+- `session_trace_export`
+- `session_trace_replay`
 - `session_stop`
 - `session_stop_all`
 
@@ -203,7 +208,7 @@ Client config for this mode:
 - Dialog/upload/download: completed (PRD removed)
 - Cookie/storage management: completed (PRD removed)
 - CDP network capture: completed (PRD removed)
-- PRD (session trace + replay): `docs/prd-session-trace-replay.md`
+- Session trace + replay: completed (PRD removed)
 
 ## Typical flow
 

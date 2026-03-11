@@ -165,5 +165,130 @@ class SessionPolicyRuntimeTest(unittest.IsolatedAsyncioTestCase):
         operation.assert_awaited_once()
 
 
+class SessionTraceRuntimeTest(unittest.IsolatedAsyncioTestCase):
+    async def _build_manager_with_session(self) -> BrowserSessionManager:
+        manager = BrowserSessionManager()
+        session = BrowserSession(
+            session_id="sess_trace",
+            browser=object(),  # type: ignore[arg-type]
+            mode="launch",
+            created_at="2026-01-01T00:00:00+00:00",
+            headless=False,
+            connection_host=None,
+            connection_port=None,
+            websocket_url=None,
+            metadata={},
+            last_known_url="https://example.com/home",
+            last_known_title="Home",
+            policy={},
+        )
+        await manager._insert_session(session)
+        return manager
+
+    async def test_trace_records_successful_action(self) -> None:
+        manager = await self._build_manager_with_session()
+        await manager.start_trace(
+            session_id="sess_trace",
+            trace_id="trace_test",
+            capture_screenshot_on_error=False,
+            capture_html_on_error=False,
+        )
+        operation = AsyncMock(return_value={"url": "https://example.com/next", "title": "Next"})
+        await manager.run_action(
+            session_id="sess_trace",
+            action_name="browser_click",
+            action_args={"selector": "#submit"},
+            operation=operation,
+        )
+        trace = await manager.get_trace_events(session_id="sess_trace")
+        self.assertEqual(trace["total_available"], 1)
+        self.assertEqual(trace["events"][0]["action"], "browser_click")
+        self.assertEqual(trace["events"][0]["inputs"]["selector"], "#submit")
+
+    async def test_trace_records_errors(self) -> None:
+        manager = await self._build_manager_with_session()
+        await manager.start_trace(
+            session_id="sess_trace",
+            capture_screenshot_on_error=False,
+            capture_html_on_error=False,
+        )
+
+        async def failing_operation(_browser):
+            raise RuntimeError("boom")
+
+        with self.assertRaises(RuntimeError):
+            await manager.run_action(
+                session_id="sess_trace",
+                action_name="browser_click",
+                operation=failing_operation,
+            )
+        trace = await manager.get_trace_events(session_id="sess_trace")
+        self.assertEqual(trace["total_available"], 1)
+        self.assertIn("boom", trace["events"][0]["error"])
+
+    async def test_trace_export_writes_file(self) -> None:
+        manager = await self._build_manager_with_session()
+        await manager.start_trace(session_id="sess_trace")
+        operation = AsyncMock(return_value={"url": "https://example.com/next", "title": "Next"})
+        await manager.run_action(
+            session_id="sess_trace",
+            action_name="browser_click",
+            operation=operation,
+        )
+        await manager.stop_trace(session_id="sess_trace")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = str(Path(tmpdir) / "trace.json")
+            exported = await manager.export_trace(
+                session_id="sess_trace",
+                output_path=output_path,
+            )
+            self.assertEqual(exported["event_count"], 1)
+            self.assertTrue(Path(output_path).exists())
+            self.assertEqual(len(exported["checksum"]), 64)
+
+    async def test_trace_replay_dry_run_reports_supported_and_skipped(self) -> None:
+        manager = await self._build_manager_with_session()
+        trace_payload = {
+            "trace_version": "1.0",
+            "session_id": "sess_trace",
+            "events": [
+                {"action": "browser_navigate", "inputs": {"url": "https://example.com"}},
+                {"action": "unsupported_action", "inputs": {}},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trace_path = Path(tmpdir) / "trace.json"
+            trace_path.write_text(json.dumps(trace_payload), encoding="utf-8")
+            replay = await manager.replay_trace(
+                trace_path=str(trace_path),
+                session_id="sess_trace",
+                dry_run=True,
+            )
+            self.assertEqual(replay["passed"], 1)
+            self.assertEqual(replay["skipped"], 1)
+
+    async def test_trace_replay_executes_supported_wait_action(self) -> None:
+        manager = await self._build_manager_with_session()
+        trace_payload = {
+            "trace_version": "1.0",
+            "session_id": "sess_trace",
+            "events": [
+                {"action": "browser_wait", "inputs": {"seconds": 0}},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            trace_path = Path(tmpdir) / "trace.json"
+            trace_path.write_text(json.dumps(trace_payload), encoding="utf-8")
+            replay = await manager.replay_trace(
+                trace_path=str(trace_path),
+                session_id="sess_trace",
+                stop_on_error=True,
+                dry_run=False,
+            )
+            self.assertEqual(replay["passed"], 1)
+            self.assertEqual(replay["failed"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

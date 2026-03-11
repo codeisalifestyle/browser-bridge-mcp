@@ -54,10 +54,10 @@ This roadmap turns the proposed feature set into a delivery plan that balances q
 
 ### Phase 4: Reproducibility platform (4-6 weeks)
 
-8. Session trace recording and replay
+8. Session trace recording and replay (completed)
    - Persist action timeline, artifacts, and replay flows.
    - Value: deterministic regression and debugging workflows.
-   - PRD: `docs/prd-session-trace-replay.md`
+   - Completed with tests; PRD removed per completion workflow.
 
 ## Dependency map
 

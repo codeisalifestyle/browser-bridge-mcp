@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -11,6 +13,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
+from . import actions as action_ops
 from .actions import ensure_observers, get_url_and_title
 from .browser import BridgeBrowser
 from .cookies import load_cookie_file
@@ -136,6 +139,34 @@ def _normalize_domains(value: list[str] | None) -> list[str] | None:
     return sorted(set(normalized))
 
 
+SENSITIVE_TRACE_KEYS = {
+    "password",
+    "token",
+    "secret",
+    "authorization",
+    "cookie",
+    "cookies",
+}
+
+
+def _sanitize_trace_value(value: Any, *, key_hint: str | None = None) -> Any:
+    if key_hint:
+        lowered = key_hint.lower()
+        if lowered == "text" or any(secret in lowered for secret in SENSITIVE_TRACE_KEYS):
+            return "***"
+
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, list):
+        return [_sanitize_trace_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _sanitize_trace_value(item, key_hint=str(key))
+            for key, item in value.items()
+        }
+    return str(value)
+
+
 @dataclass
 class BrowserSession:
     session_id: str
@@ -150,6 +181,14 @@ class BrowserSession:
     last_known_url: str | None = None
     last_known_title: str | None = None
     policy: dict[str, Any] = field(default_factory=_default_policy)
+    trace_id: str | None = None
+    trace_active: bool = False
+    trace_started_at: str | None = None
+    trace_stopped_at: str | None = None
+    trace_capture_screenshot_on_error: bool = True
+    trace_capture_html_on_error: bool = False
+    trace_replay_active: bool = False
+    trace_events: list[dict[str, Any]] = field(default_factory=list)
     action_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def summary(self) -> dict[str, Any]:
@@ -165,6 +204,9 @@ class BrowserSession:
             "last_known_title": self.last_known_title,
             "metadata": self.metadata,
             "policy": self.policy,
+            "trace_id": self.trace_id,
+            "trace_active": self.trace_active,
+            "trace_event_count": len(self.trace_events),
         }
 
 
@@ -284,6 +326,378 @@ class BrowserSessionManager:
                 "domain": domain,
             }
         return None
+
+    async def start_trace(
+        self,
+        *,
+        session_id: str,
+        trace_id: str | None = None,
+        capture_screenshot_on_error: bool = True,
+        capture_html_on_error: bool = False,
+    ) -> dict[str, Any]:
+        session = await self.get_session(session_id)
+        session.trace_id = trace_id or f"trace_{uuid.uuid4().hex[:12]}"
+        session.trace_active = True
+        session.trace_started_at = _utc_now_iso()
+        session.trace_stopped_at = None
+        session.trace_capture_screenshot_on_error = bool(capture_screenshot_on_error)
+        session.trace_capture_html_on_error = bool(capture_html_on_error)
+        session.trace_replay_active = False
+        session.trace_events = []
+        return {
+            "session_id": session.session_id,
+            "trace_id": session.trace_id,
+            "started": True,
+            "started_at": session.trace_started_at,
+            "capture_screenshot_on_error": session.trace_capture_screenshot_on_error,
+            "capture_html_on_error": session.trace_capture_html_on_error,
+        }
+
+    async def stop_trace(self, *, session_id: str) -> dict[str, Any]:
+        session = await self.get_session(session_id)
+        session.trace_active = False
+        session.trace_stopped_at = _utc_now_iso()
+        errors = sum(1 for event in session.trace_events if event.get("error"))
+        return {
+            "session_id": session.session_id,
+            "trace_id": session.trace_id,
+            "stopped": True,
+            "started_at": session.trace_started_at,
+            "stopped_at": session.trace_stopped_at,
+            "steps": len(session.trace_events),
+            "errors": errors,
+        }
+
+    async def get_trace_events(
+        self,
+        *,
+        session_id: str,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        session = await self.get_session(session_id)
+        normalized_offset = max(0, int(offset))
+        normalized_limit = max(1, min(int(limit), 1000))
+        events = session.trace_events[normalized_offset : normalized_offset + normalized_limit]
+        return {
+            "session_id": session.session_id,
+            "trace_id": session.trace_id,
+            "total_available": len(session.trace_events),
+            "returned": len(events),
+            "offset": normalized_offset,
+            "limit": normalized_limit,
+            "events": events,
+        }
+
+    async def export_trace(
+        self,
+        *,
+        session_id: str,
+        output_path: str,
+    ) -> dict[str, Any]:
+        session = await self.get_session(session_id)
+        path = Path(output_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "trace_version": "1.0",
+            "trace_id": session.trace_id,
+            "session_id": session.session_id,
+            "started_at": session.trace_started_at,
+            "stopped_at": session.trace_stopped_at,
+            "events": session.trace_events,
+        }
+        serialized = json.dumps(payload, ensure_ascii=True, indent=2)
+        path.write_text(serialized, encoding="utf-8")
+        checksum = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return {
+            "session_id": session.session_id,
+            "trace_id": session.trace_id,
+            "path": str(path),
+            "event_count": len(session.trace_events),
+            "checksum": checksum,
+        }
+
+    def _build_replay_operation(
+        self,
+        *,
+        action_name: str,
+        inputs: dict[str, Any],
+    ) -> Callable[[BridgeBrowser], Awaitable[Any]] | None:
+        if action_name == "browser_url":
+            return action_ops.get_url_and_title
+        if action_name == "browser_navigate":
+            url = inputs.get("url")
+            if not isinstance(url, str):
+                return None
+            return lambda browser: action_ops.navigate_to(
+                browser,
+                url=url,
+                wait_seconds=float(inputs.get("wait_seconds", action_ops.DEFAULT_ACTION_WAIT_SECONDS)),
+            )
+        if action_name == "browser_back":
+            return lambda browser: action_ops.navigate_back(
+                browser,
+                wait_seconds=float(inputs.get("wait_seconds", action_ops.DEFAULT_ACTION_WAIT_SECONDS)),
+            )
+        if action_name == "browser_forward":
+            return lambda browser: action_ops.navigate_forward(
+                browser,
+                wait_seconds=float(inputs.get("wait_seconds", action_ops.DEFAULT_ACTION_WAIT_SECONDS)),
+            )
+        if action_name == "browser_reload":
+            return lambda browser: action_ops.reload_page(
+                browser,
+                wait_seconds=float(inputs.get("wait_seconds", action_ops.DEFAULT_ACTION_WAIT_SECONDS)),
+                ignore_cache=bool(inputs.get("ignore_cache", False)),
+            )
+        if action_name == "browser_wait":
+            return lambda _: action_ops.wait_seconds(
+                float(inputs.get("seconds", action_ops.DEFAULT_ACTION_WAIT_SECONDS))
+            )
+        if action_name == "browser_wait_for_selector":
+            selector = inputs.get("selector")
+            if not isinstance(selector, str):
+                return None
+            return lambda browser: action_ops.wait_for_selector(
+                browser,
+                selector=selector,
+                timeout_seconds=float(inputs.get("timeout_seconds", 10.0)),
+            )
+        if action_name == "browser_click":
+            selector = inputs.get("selector")
+            if not isinstance(selector, str):
+                return None
+            return lambda browser: action_ops.click_selector(
+                browser,
+                selector=selector,
+                wait_seconds=float(inputs.get("wait_seconds", action_ops.DEFAULT_ACTION_WAIT_SECONDS)),
+            )
+        if action_name == "browser_type":
+            selector = inputs.get("selector")
+            text = inputs.get("text")
+            if not isinstance(selector, str) or not isinstance(text, str):
+                return None
+            return lambda browser: action_ops.type_into_selector(
+                browser,
+                selector=selector,
+                text=text,
+                clear=bool(inputs.get("clear", False)),
+                submit=bool(inputs.get("submit", False)),
+                wait_seconds=float(inputs.get("wait_seconds", action_ops.DEFAULT_ACTION_WAIT_SECONDS)),
+            )
+        if action_name == "browser_scroll":
+            return lambda browser: action_ops.scroll_page(
+                browser,
+                selector=inputs.get("selector"),
+                delta_y=int(inputs.get("delta_y", 1200)),
+                to_top=bool(inputs.get("to_top", False)),
+                to_bottom=bool(inputs.get("to_bottom", False)),
+                wait_seconds=float(inputs.get("wait_seconds", action_ops.DEFAULT_ACTION_WAIT_SECONDS)),
+            )
+        if action_name == "browser_snapshot":
+            return lambda browser: action_ops.snapshot_interactive(
+                browser,
+                limit=int(inputs.get("limit", action_ops.DEFAULT_ACTION_LIMIT)),
+            )
+        if action_name == "browser_query":
+            selector = inputs.get("selector")
+            if not isinstance(selector, str):
+                return None
+            return lambda browser: action_ops.query_selector(
+                browser,
+                selector=selector,
+                limit=int(inputs.get("limit", action_ops.DEFAULT_ACTION_LIMIT)),
+            )
+        if action_name == "browser_evaluate":
+            script = inputs.get("script")
+            if not isinstance(script, str):
+                return None
+            return lambda browser: browser.evaluate(script)
+        return None
+
+    async def replay_trace(
+        self,
+        *,
+        trace_path: str,
+        session_id: str | None = None,
+        stop_on_error: bool = True,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        path = Path(trace_path).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"Trace file not found: {path}")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        events = payload.get("events", [])
+        if not isinstance(events, list):
+            raise ValueError("Invalid trace file: events must be a list.")
+
+        resolved_session_id = session_id or str(payload.get("session_id") or "").strip()
+        if not resolved_session_id:
+            raise ValueError("Provide session_id or use a trace file with session_id.")
+
+        session = await self.get_session(resolved_session_id)
+        outcomes: list[dict[str, Any]] = []
+        passed = 0
+        failed = 0
+        skipped = 0
+
+        previous_replay_state = session.trace_replay_active
+        session.trace_replay_active = True
+        try:
+            for index, event in enumerate(events):
+                action_name = str(event.get("action") or "")
+                inputs_raw = event.get("inputs", {})
+                inputs = inputs_raw if isinstance(inputs_raw, dict) else {}
+                operation = self._build_replay_operation(action_name=action_name, inputs=inputs)
+                if operation is None:
+                    skipped += 1
+                    outcomes.append(
+                        {
+                            "index": index,
+                            "action": action_name,
+                            "status": "skipped",
+                            "reason": "unsupported_action_or_missing_inputs",
+                        }
+                    )
+                    if stop_on_error and not dry_run:
+                        break
+                    continue
+
+                if dry_run:
+                    passed += 1
+                    outcomes.append(
+                        {
+                            "index": index,
+                            "action": action_name,
+                            "status": "dry_run_ok",
+                        }
+                    )
+                    continue
+
+                try:
+                    result = await self.run_action(
+                        session_id=resolved_session_id,
+                        action_name=action_name,
+                        action_args=inputs,
+                        operation=operation,
+                    )
+                    if isinstance(result, dict) and result.get("allowed") is False:
+                        failed += 1
+                        outcomes.append(
+                            {
+                                "index": index,
+                                "action": action_name,
+                                "status": "failed",
+                                "reason": result.get("reason") or "policy_denied",
+                            }
+                        )
+                        if stop_on_error:
+                            break
+                    else:
+                        passed += 1
+                        outcomes.append(
+                            {
+                                "index": index,
+                                "action": action_name,
+                                "status": "passed",
+                            }
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    outcomes.append(
+                        {
+                            "index": index,
+                            "action": action_name,
+                            "status": "failed",
+                            "reason": str(exc),
+                        }
+                    )
+                    if stop_on_error:
+                        break
+        finally:
+            session.trace_replay_active = previous_replay_state
+
+        return {
+            "trace_path": str(path),
+            "session_id": resolved_session_id,
+            "dry_run": bool(dry_run),
+            "stop_on_error": bool(stop_on_error),
+            "total_events": len(events),
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+            "outcomes": outcomes,
+        }
+
+    async def _capture_trace_artifacts(self, session: BrowserSession) -> dict[str, Any]:
+        artifacts: dict[str, Any] = {}
+        tab = getattr(session.browser, "tab", None)
+        if not tab:
+            return artifacts
+
+        if session.trace_capture_screenshot_on_error:
+            screenshot_path = (
+                Path(tempfile.gettempdir())
+                / f"bbmcp-trace-{session.trace_id or 'trace'}-{uuid.uuid4().hex[:8]}.png"
+            )
+            try:
+                saved = await tab.save_screenshot(
+                    filename=str(screenshot_path),
+                    format="png",
+                    full_page=False,
+                )
+                artifacts["screenshot_path"] = str(saved)
+            except Exception:
+                pass
+
+        if session.trace_capture_html_on_error:
+            html_path = (
+                Path(tempfile.gettempdir())
+                / f"bbmcp-trace-{session.trace_id or 'trace'}-{uuid.uuid4().hex[:8]}.html"
+            )
+            try:
+                html = str(await tab.get_content())
+                html_path.write_text(html, encoding="utf-8")
+                artifacts["html_path"] = str(html_path)
+            except Exception:
+                pass
+        return artifacts
+
+    def _append_trace_event(
+        self,
+        *,
+        session: BrowserSession,
+        action_name: str,
+        inputs: dict[str, Any] | None,
+        result: Any,
+        error: str | None,
+        url_before: str | None,
+        title_before: str | None,
+        duration_ms: int,
+        artifacts: dict[str, Any] | None = None,
+    ) -> None:
+        event: dict[str, Any] = {
+            "index": len(session.trace_events),
+            "timestamp": _utc_now_iso(),
+            "action": action_name,
+            "inputs": _sanitize_trace_value(inputs or {}),
+            "result": _sanitize_trace_value(result),
+            "url_before": url_before,
+            "url_after": session.last_known_url,
+            "title_before": title_before,
+            "title_after": session.last_known_title,
+            "duration_ms": duration_ms,
+        }
+        if error:
+            event["error"] = error
+        if artifacts:
+            event["artifacts"] = artifacts
+        session.trace_events.append(event)
+        if len(session.trace_events) > 5000:
+            session.trace_events = session.trace_events[-5000:]
+            for idx, row in enumerate(session.trace_events):
+                row["index"] = idx
 
     async def start_session(
         self,
@@ -427,19 +841,55 @@ class BrowserSessionManager:
     ) -> dict[str, Any]:
         session = await self.get_session(session_id)
         async with session.action_lock:
+            loop = asyncio.get_running_loop()
+            started_at = loop.time()
+            url_before = session.last_known_url
+            title_before = session.last_known_title
             denial = self._policy_denial(
                 session=session,
                 action_name=action_name,
                 action_args=action_args,
             )
             if denial:
-                return {
+                response = {
                     "session_id": session.session_id,
                     "action": action_name,
                     "executed_at": _utc_now_iso(),
                     **denial,
                 }
-            payload = await operation(session.browser)
+                if session.trace_active and not session.trace_replay_active:
+                    duration_ms = int(max(0.0, (loop.time() - started_at) * 1000))
+                    self._append_trace_event(
+                        session=session,
+                        action_name=action_name,
+                        inputs=action_args,
+                        result=response,
+                        error=None,
+                        url_before=url_before,
+                        title_before=title_before,
+                        duration_ms=duration_ms,
+                    )
+                return response
+
+            try:
+                payload = await operation(session.browser)
+            except Exception as exc:
+                if session.trace_active and not session.trace_replay_active:
+                    artifacts = await self._capture_trace_artifacts(session)
+                    duration_ms = int(max(0.0, (loop.time() - started_at) * 1000))
+                    self._append_trace_event(
+                        session=session,
+                        action_name=action_name,
+                        inputs=action_args,
+                        result=None,
+                        error=str(exc),
+                        url_before=url_before,
+                        title_before=title_before,
+                        duration_ms=duration_ms,
+                        artifacts=artifacts,
+                    )
+                raise
+
             if isinstance(payload, dict):
                 if isinstance(payload.get("url"), str):
                     session.last_known_url = payload["url"]
@@ -455,4 +905,21 @@ class BrowserSessionManager:
                 response.update(payload)
             else:
                 response["payload"] = payload
+
+            if session.trace_active and not session.trace_replay_active:
+                duration_ms = int(max(0.0, (loop.time() - started_at) * 1000))
+                trace_result = dict(response)
+                trace_result.pop("session_id", None)
+                trace_result.pop("action", None)
+                trace_result.pop("executed_at", None)
+                self._append_trace_event(
+                    session=session,
+                    action_name=action_name,
+                    inputs=action_args,
+                    result=trace_result,
+                    error=None,
+                    url_before=url_before,
+                    title_before=title_before,
+                    duration_ms=duration_ms,
+                )
             return response
