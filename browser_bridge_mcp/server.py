@@ -129,6 +129,26 @@ def create_server(
         session = await manager.get_session(session_id)
         return session.summary()
 
+    @mcp.tool(name="session_set_policy", description="Set runtime policy for one session.")
+    async def session_set_policy(
+        session_id: str,
+        allowed_domains: list[str] | None = None,
+        blocked_domains: list[str] | None = None,
+        read_only: bool | None = None,
+        allow_evaluate: bool | None = None,
+    ) -> dict[str, Any]:
+        return await manager.set_policy(
+            session_id=session_id,
+            allowed_domains=allowed_domains,
+            blocked_domains=blocked_domains,
+            read_only=read_only,
+            allow_evaluate=allow_evaluate,
+        )
+
+    @mcp.tool(name="session_get_policy", description="Get runtime policy for one session.")
+    async def session_get_policy(session_id: str) -> dict[str, Any]:
+        return await manager.get_policy(session_id=session_id)
+
     @mcp.tool(name="session_stop", description="Stop one session by id.")
     async def session_stop(session_id: str) -> dict[str, Any]:
         return await manager.stop_session(session_id=session_id)
@@ -159,6 +179,7 @@ def create_server(
                 url=url,
                 wait_seconds=wait_seconds,
             ),
+            action_args={"url": url},
         )
 
     @mcp.tool(name="browser_back", description="Navigate one step back in browser history.")
@@ -231,6 +252,7 @@ def create_server(
                 switch=switch,
                 wait_seconds=wait_seconds,
             ),
+            action_args={"url": url},
         )
 
     @mcp.tool(name="browser_tab_switch", description="Switch active tab by tab_id or index.")

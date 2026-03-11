@@ -144,6 +144,8 @@ Client config for this mode:
 - `session_attach`
 - `session_list`
 - `session_get`
+- `session_set_policy`
+- `session_get_policy`
 - `session_stop`
 - `session_stop_all`
 
@@ -182,7 +184,7 @@ Client config for this mode:
 - Navigation helpers: completed (PRD removed)
 - Advanced wait primitives: completed (PRD removed)
 - Tab management: completed (PRD removed)
-- PRD (policy and guardrails): `docs/prd-policy-guardrails.md`
+- Policy and guardrails: completed (PRD removed)
 - PRD (dialog/upload/download): `docs/prd-dialog-upload-download.md`
 - PRD (cookie/storage management): `docs/prd-cookie-storage-management.md`
 - PRD (CDP network capture): `docs/prd-network-cdp-capture.md`

@@ -30,10 +30,10 @@ This roadmap turns the proposed feature set into a delivery plan that balances q
 
 ### Phase 2: Safety + workflow coverage (2-4 weeks)
 
-4. Policy and guardrails
+4. Policy and guardrails (completed)
    - Domain allowlist/blocklist and read-only mode.
    - Value: safer automation in shared or production-like contexts.
-   - PRD: `docs/prd-policy-guardrails.md`
+   - Completed with tests; PRD removed per completion workflow.
 
 5. Dialog, upload, and download support
    - Handle alerts/prompts, file inputs, and download tracking.

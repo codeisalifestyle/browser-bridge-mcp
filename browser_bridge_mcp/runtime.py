@@ -16,6 +16,23 @@ from .browser import BridgeBrowser
 from .cookies import load_cookie_file
 
 
+READ_ONLY_BLOCKED_ACTIONS = {
+    "browser_click",
+    "browser_type",
+    "browser_tab_new",
+    "browser_tab_close",
+}
+
+
+def _default_policy() -> dict[str, Any]:
+    return {
+        "allowed_domains": None,
+        "blocked_domains": [],
+        "read_only": False,
+        "allow_evaluate": True,
+    }
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -81,6 +98,39 @@ def resolve_connection(
     return str(host).strip(), _normalize_port(port)
 
 
+def _domain_from_value(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.hostname:
+        return str(parsed.hostname).lower().strip(".")
+    fallback = value.strip().lower()
+    if "://" not in fallback:
+        parsed_fallback = urlparse(f"https://{fallback}")
+        if parsed_fallback.hostname:
+            return str(parsed_fallback.hostname).lower().strip(".")
+    return None
+
+
+def _domain_matches(host: str, pattern: str) -> bool:
+    normalized_host = host.lower().strip(".")
+    normalized_pattern = pattern.lower().strip(".")
+    return normalized_host == normalized_pattern or normalized_host.endswith(
+        f".{normalized_pattern}"
+    )
+
+
+def _normalize_domains(value: list[str] | None) -> list[str] | None:
+    if value is None:
+        return None
+    normalized: list[str] = []
+    for raw in value:
+        domain = _domain_from_value(raw)
+        if domain:
+            normalized.append(domain)
+    return sorted(set(normalized))
+
+
 @dataclass
 class BrowserSession:
     session_id: str
@@ -94,6 +144,7 @@ class BrowserSession:
     metadata: dict[str, Any]
     last_known_url: str | None = None
     last_known_title: str | None = None
+    policy: dict[str, Any] = field(default_factory=_default_policy)
     action_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def summary(self) -> dict[str, Any]:
@@ -108,6 +159,7 @@ class BrowserSession:
             "last_known_url": self.last_known_url,
             "last_known_title": self.last_known_title,
             "metadata": self.metadata,
+            "policy": self.policy,
         }
 
 
@@ -139,6 +191,94 @@ class BrowserSessionManager:
         if session is None:
             raise ValueError(f"Session not found: {session_id}")
         return session
+
+    async def set_policy(
+        self,
+        *,
+        session_id: str,
+        allowed_domains: list[str] | None = None,
+        blocked_domains: list[str] | None = None,
+        read_only: bool | None = None,
+        allow_evaluate: bool | None = None,
+    ) -> dict[str, Any]:
+        session = await self.get_session(session_id)
+        policy = dict(_default_policy())
+        policy.update(session.policy or {})
+        if allowed_domains is not None:
+            policy["allowed_domains"] = _normalize_domains(allowed_domains)
+        if blocked_domains is not None:
+            policy["blocked_domains"] = _normalize_domains(blocked_domains) or []
+        if read_only is not None:
+            policy["read_only"] = bool(read_only)
+        if allow_evaluate is not None:
+            policy["allow_evaluate"] = bool(allow_evaluate)
+        session.policy = policy
+        return {
+            "session_id": session.session_id,
+            "policy": policy,
+        }
+
+    async def get_policy(self, *, session_id: str) -> dict[str, Any]:
+        session = await self.get_session(session_id)
+        policy = dict(_default_policy())
+        policy.update(session.policy or {})
+        session.policy = policy
+        return {
+            "session_id": session.session_id,
+            "policy": policy,
+        }
+
+    def _policy_denial(
+        self,
+        *,
+        session: BrowserSession,
+        action_name: str,
+        action_args: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        policy = dict(_default_policy())
+        policy.update(session.policy or {})
+
+        if policy.get("read_only") and action_name in READ_ONLY_BLOCKED_ACTIONS:
+            return {
+                "allowed": False,
+                "reason_code": "read_only_block",
+                "reason": f"Action blocked by read_only policy: {action_name}",
+            }
+
+        if not policy.get("allow_evaluate", True) and action_name == "browser_evaluate":
+            return {
+                "allowed": False,
+                "reason_code": "evaluate_blocked",
+                "reason": "Action blocked because allow_evaluate is false.",
+            }
+
+        target_url: str | None = None
+        if action_args and isinstance(action_args.get("url"), str):
+            target_url = action_args["url"]
+        elif isinstance(session.last_known_url, str):
+            target_url = session.last_known_url
+
+        domain = _domain_from_value(target_url)
+        blocked_domains = policy.get("blocked_domains") or []
+        if domain and any(_domain_matches(domain, blocked) for blocked in blocked_domains):
+            return {
+                "allowed": False,
+                "reason_code": "domain_blocked",
+                "reason": f"Action blocked by blocked_domains policy for domain: {domain}",
+                "domain": domain,
+            }
+
+        allowed_domains = policy.get("allowed_domains")
+        if domain and allowed_domains and not any(
+            _domain_matches(domain, allowed) for allowed in allowed_domains
+        ):
+            return {
+                "allowed": False,
+                "reason_code": "domain_not_allowed",
+                "reason": f"Action domain is not in allowed_domains: {domain}",
+                "domain": domain,
+            }
+        return None
 
     async def start_session(
         self,
@@ -278,9 +418,22 @@ class BrowserSessionManager:
         session_id: str,
         action_name: str,
         operation: Callable[[BridgeBrowser], Awaitable[Any]],
+        action_args: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         session = await self.get_session(session_id)
         async with session.action_lock:
+            denial = self._policy_denial(
+                session=session,
+                action_name=action_name,
+                action_args=action_args,
+            )
+            if denial:
+                return {
+                    "session_id": session.session_id,
+                    "action": action_name,
+                    "executed_at": _utc_now_iso(),
+                    **denial,
+                }
             payload = await operation(session.browser)
             if isinstance(payload, dict):
                 if isinstance(payload.get("url"), str):
