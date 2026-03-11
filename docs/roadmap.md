@@ -40,10 +40,10 @@ This roadmap turns the proposed feature set into a delivery plan that balances q
    - Value: unlocks common real-world test flows.
    - Completed with tests; PRD removed per completion workflow.
 
-6. Cookie and storage management
+6. Cookie and storage management (completed)
    - First-class cookie/localStorage/sessionStorage tools.
    - Value: repeatable login/bootstrap state without brittle scripts.
-   - PRD: `docs/prd-cookie-storage-management.md`
+   - Completed with tests; PRD removed per completion workflow.
 
 ### Phase 3: Deep observability (3-5 weeks)
 

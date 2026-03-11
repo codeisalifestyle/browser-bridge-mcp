@@ -13,13 +13,17 @@ from .actions import (
     DEFAULT_ACTION_WAIT_SECONDS,
     DEFAULT_EVENT_LIMIT,
     DEFAULT_HTML_LIMIT,
+    clear_cookies,
+    clear_storage,
     close_tab,
     click_selector,
     current_tab,
+    get_cookies,
     get_console_messages,
     get_downloads,
     get_network_requests,
     get_page_html,
+    get_storage,
     get_url_and_title,
     handle_dialog,
     list_tabs,
@@ -30,8 +34,11 @@ from .actions import (
     normalize_evaluate_payload,
     query_selector,
     reload_page,
+    save_cookies,
+    set_cookies,
     set_download_dir,
     set_file_input,
+    set_storage,
     scroll_page,
     snapshot_interactive,
     switch_tab,
@@ -608,6 +615,108 @@ def create_server(
                 browser,
                 limit=limit,
                 clear=clear,
+            ),
+        )
+
+    @mcp.tool(name="browser_cookies_get", description="Get all cookies visible to current browser context.")
+    async def browser_cookies_get(
+        session_id: str,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_cookies_get",
+            operation=get_cookies,
+        )
+
+    @mcp.tool(name="browser_cookies_set", description="Set cookies into current browser context.")
+    async def browser_cookies_set(
+        session_id: str,
+        cookies: list[dict[str, Any]],
+        fallback_domain: str | None = None,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_cookies_set",
+            operation=lambda browser: set_cookies(
+                browser,
+                cookies=cookies,
+                fallback_domain=fallback_domain,
+            ),
+        )
+
+    @mcp.tool(name="browser_cookies_save", description="Save current cookies to a JSON file.")
+    async def browser_cookies_save(
+        session_id: str,
+        output_path: str,
+        wrap_object: bool = True,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_cookies_save",
+            operation=lambda browser: save_cookies(
+                browser,
+                output_path=output_path,
+                wrap_object=wrap_object,
+            ),
+        )
+
+    @mcp.tool(name="browser_cookies_clear", description="Clear cookies (all or by domain).")
+    async def browser_cookies_clear(
+        session_id: str,
+        domain: str | None = None,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_cookies_clear",
+            operation=lambda browser: clear_cookies(
+                browser,
+                domain=domain,
+            ),
+        )
+
+    @mcp.tool(name="browser_storage_get", description="Get local/session storage values.")
+    async def browser_storage_get(
+        session_id: str,
+        kind: str = "both",
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_storage_get",
+            operation=lambda browser: get_storage(
+                browser,
+                kind=kind,
+            ),
+        )
+
+    @mcp.tool(name="browser_storage_set", description="Set local/session storage key/value entries.")
+    async def browser_storage_set(
+        session_id: str,
+        kind: str,
+        entries: dict[str, str],
+        clear_first: bool = False,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_storage_set",
+            operation=lambda browser: set_storage(
+                browser,
+                kind=kind,
+                entries=entries,
+                clear_first=clear_first,
+            ),
+        )
+
+    @mcp.tool(name="browser_storage_clear", description="Clear local/session storage.")
+    async def browser_storage_clear(
+        session_id: str,
+        kind: str = "both",
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_storage_clear",
+            operation=lambda browser: clear_storage(
+                browser,
+                kind=kind,
             ),
         )
 

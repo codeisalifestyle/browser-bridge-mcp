@@ -383,6 +383,75 @@ def _waited_ms(start: float, now: float) -> int:
     return int(max(0.0, now - start) * 1000)
 
 
+def _storage_get_script(kind: str) -> str:
+    kind_json = json.dumps(kind)
+    return f"""
+    (() => {{
+      const readStorage = (storage) => {{
+        const out = {{}};
+        for (let i = 0; i < storage.length; i++) {{
+          const key = storage.key(i);
+          if (key === null) continue;
+          out[key] = storage.getItem(key);
+        }}
+        return out;
+      }};
+      const kind = {kind_json};
+      const payload = {{}};
+      if (kind === "local" || kind === "both") {{
+        payload.local = readStorage(window.localStorage);
+      }}
+      if (kind === "session" || kind === "both") {{
+        payload.session = readStorage(window.sessionStorage);
+      }}
+      return payload;
+    }})()
+    """
+
+
+def _storage_set_script(kind: str, entries: dict[str, str], clear_first: bool) -> str:
+    kind_json = json.dumps(kind)
+    entries_json = json.dumps(entries)
+    clear_js = "true" if clear_first else "false"
+    return f"""
+    (() => {{
+      const kind = {kind_json};
+      const entries = {entries_json};
+      const clearFirst = {clear_js};
+      const storage = kind === "local" ? window.localStorage : window.sessionStorage;
+      if (clearFirst) {{
+        storage.clear();
+      }}
+      for (const [key, value] of Object.entries(entries)) {{
+        storage.setItem(key, String(value));
+      }}
+      return {{
+        kind,
+        applied_count: Object.keys(entries).length,
+      }};
+    }})()
+    """
+
+
+def _storage_clear_script(kind: str) -> str:
+    kind_json = json.dumps(kind)
+    return f"""
+    (() => {{
+      const kind = {kind_json};
+      if (kind === "local" || kind === "both") {{
+        window.localStorage.clear();
+      }}
+      if (kind === "session" || kind === "both") {{
+        window.sessionStorage.clear();
+      }}
+      return {{
+        kind,
+        cleared: true,
+      }};
+    }})()
+    """
+
+
 async def ensure_observers(browser: BridgeBrowser) -> None:
     await browser.add_script_on_new_document(_OBSERVER_SCRIPT)
     await browser.evaluate(_OBSERVER_SCRIPT)
@@ -597,6 +666,138 @@ async def get_downloads(
         clear=clear,
     )
     payload["rows"] = payload.get("rows", [])
+    return payload
+
+
+async def get_cookies(browser: BridgeBrowser) -> dict[str, Any]:
+    cookies = await browser.get_cookies()
+    return {
+        "count": len(cookies),
+        "cookies": cookies,
+    }
+
+
+async def set_cookies(
+    browser: BridgeBrowser,
+    *,
+    cookies: list[dict[str, Any]],
+    fallback_domain: str | None = None,
+) -> dict[str, Any]:
+    normalized_rows = [
+        row
+        for row in cookies
+        if isinstance(row, dict) and row.get("name") is not None and row.get("value") is not None
+    ]
+    await browser.set_cookies(normalized_rows, fallback_domain=fallback_domain)
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "applied_count": len(normalized_rows),
+            "fallback_domain": fallback_domain,
+        }
+    )
+    return payload
+
+
+async def save_cookies(
+    browser: BridgeBrowser,
+    *,
+    output_path: str,
+    wrap_object: bool = True,
+) -> dict[str, Any]:
+    cookies = await browser.get_cookies()
+    path = Path(output_path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: Any = {"cookies": cookies} if wrap_object else cookies
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    return {
+        "path": str(path),
+        "saved_count": len(cookies),
+        "wrap_object": bool(wrap_object),
+    }
+
+
+async def clear_cookies(
+    browser: BridgeBrowser,
+    *,
+    domain: str | None = None,
+) -> dict[str, Any]:
+    cleared_count = await browser.clear_cookies(domain=domain)
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "domain": domain,
+            "cleared_count": cleared_count,
+        }
+    )
+    return payload
+
+
+async def get_storage(
+    browser: BridgeBrowser,
+    *,
+    kind: str = "both",
+) -> dict[str, Any]:
+    if kind not in {"local", "session", "both"}:
+        raise ValueError("kind must be one of: local, session, both.")
+    raw = await browser.evaluate(_storage_get_script(kind))
+    storage_payload = normalize_evaluate_payload(raw)
+    if not isinstance(storage_payload, dict):
+        raise RuntimeError("Storage query returned non-object payload.")
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "kind": kind,
+            "local": storage_payload.get("local", {}),
+            "session": storage_payload.get("session", {}),
+        }
+    )
+    return payload
+
+
+async def set_storage(
+    browser: BridgeBrowser,
+    *,
+    kind: str,
+    entries: dict[str, str],
+    clear_first: bool = False,
+) -> dict[str, Any]:
+    if kind not in {"local", "session"}:
+        raise ValueError("kind must be one of: local, session.")
+    normalized_entries = {str(key): str(value) for key, value in entries.items()}
+    raw = await browser.evaluate(_storage_set_script(kind, normalized_entries, clear_first))
+    result = normalize_evaluate_payload(raw)
+    if not isinstance(result, dict):
+        raise RuntimeError("Storage set returned non-object payload.")
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "kind": kind,
+            "clear_first": bool(clear_first),
+            "applied_count": int(result.get("applied_count", 0)),
+        }
+    )
+    return payload
+
+
+async def clear_storage(
+    browser: BridgeBrowser,
+    *,
+    kind: str = "both",
+) -> dict[str, Any]:
+    if kind not in {"local", "session", "both"}:
+        raise ValueError("kind must be one of: local, session, both.")
+    raw = await browser.evaluate(_storage_clear_script(kind))
+    result = normalize_evaluate_payload(raw)
+    if not isinstance(result, dict):
+        raise RuntimeError("Storage clear returned non-object payload.")
+    payload = await get_url_and_title(browser)
+    payload.update(
+        {
+            "kind": kind,
+            "cleared": bool(result.get("cleared", False)),
+        }
+    )
     return payload
 
 

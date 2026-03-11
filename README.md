@@ -179,6 +179,13 @@ Client config for this mode:
 - `browser_console_messages`
 - `browser_network_requests`
 - `browser_downloads`
+- `browser_cookies_get`
+- `browser_cookies_set`
+- `browser_cookies_save`
+- `browser_cookies_clear`
+- `browser_storage_get`
+- `browser_storage_set`
+- `browser_storage_clear`
 - `browser_take_screenshot`
 - `browser_evaluate`
 
@@ -190,7 +197,7 @@ Client config for this mode:
 - Tab management: completed (PRD removed)
 - Policy and guardrails: completed (PRD removed)
 - Dialog/upload/download: completed (PRD removed)
-- PRD (cookie/storage management): `docs/prd-cookie-storage-management.md`
+- Cookie/storage management: completed (PRD removed)
 - PRD (CDP network capture): `docs/prd-network-cdp-capture.md`
 - PRD (session trace + replay): `docs/prd-session-trace-replay.md`
 

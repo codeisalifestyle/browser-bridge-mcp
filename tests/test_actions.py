@@ -1,10 +1,17 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from browser_bridge_mcp.actions import (
+    clear_cookies,
+    clear_storage,
     close_tab,
     current_tab,
+    get_cookies,
     get_downloads,
+    get_storage,
     handle_dialog,
     list_tabs,
     navigate_back,
@@ -12,8 +19,11 @@ from browser_bridge_mcp.actions import (
     new_tab,
     normalize_evaluate_payload,
     reload_page,
+    save_cookies,
+    set_cookies,
     set_download_dir,
     set_file_input,
+    set_storage,
     switch_tab,
     wait_for_function,
     wait_for_network_idle,
@@ -193,6 +203,45 @@ class _FakeDialogUploadBrowser:
             "total_available": 1,
             "rows": [{"guid": "dl-1", "state": "completed"}],
         }
+
+
+class _FakeCookieStorageBrowser:
+    def __init__(self) -> None:
+        self.tab = _FakeTab("https://example.com/app")
+        self._title = "App"
+        self._cookies = [
+            {
+                "name": "sid",
+                "value": "123",
+                "domain": "example.com",
+                "path": "/",
+            }
+        ]
+        self.set_cookies_args: tuple[list[dict[str, object]], str | None] | None = None
+        self.clear_cookies_domain: str | None = None
+        self.evaluate_results: list[object] = []
+
+    async def evaluate(self, script: str):
+        if script == "document.title":
+            return self._title
+        if self.evaluate_results:
+            return self.evaluate_results.pop(0)
+        raise AssertionError(f"Unexpected script: {script}")
+
+    async def get_cookies(self) -> list[dict[str, object]]:
+        return list(self._cookies)
+
+    async def set_cookies(
+        self,
+        cookies: list[dict[str, object]],
+        *,
+        fallback_domain: str | None = None,
+    ) -> None:
+        self.set_cookies_args = (cookies, fallback_domain)
+
+    async def clear_cookies(self, *, domain: str | None = None) -> int:
+        self.clear_cookies_domain = domain
+        return 1
 
 
 class NormalizeEvaluatePayloadTest(unittest.TestCase):
@@ -428,6 +477,69 @@ class DialogUploadDownloadActionsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["returned"], 1)
         self.assertEqual(payload["rows"][0]["guid"], "dl-1")
         self.assertEqual(browser.download_query_args, (10, True))
+
+
+class CookieStorageActionsTest(unittest.IsolatedAsyncioTestCase):
+    async def test_get_cookies_returns_cookie_rows(self) -> None:
+        browser = _FakeCookieStorageBrowser()
+        payload = await get_cookies(browser)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["cookies"][0]["name"], "sid")
+
+    async def test_set_cookies_applies_valid_rows(self) -> None:
+        browser = _FakeCookieStorageBrowser()
+        payload = await set_cookies(
+            browser,
+            cookies=[
+                {"name": "sid", "value": "abc", "domain": "example.com"},
+                {"value": "missing-name"},
+            ],
+            fallback_domain="example.com",
+        )
+        self.assertEqual(payload["applied_count"], 1)
+        self.assertEqual(browser.set_cookies_args[1], "example.com")
+        self.assertEqual(len(browser.set_cookies_args[0]), 1)
+
+    async def test_save_cookies_writes_json_file(self) -> None:
+        browser = _FakeCookieStorageBrowser()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = str(Path(tmpdir) / "cookies.json")
+            payload = await save_cookies(browser, output_path=output_path, wrap_object=True)
+            self.assertEqual(payload["saved_count"], 1)
+            data = json.loads(Path(output_path).read_text(encoding="utf-8"))
+            self.assertIn("cookies", data)
+            self.assertEqual(data["cookies"][0]["name"], "sid")
+
+    async def test_clear_cookies_returns_cleared_count(self) -> None:
+        browser = _FakeCookieStorageBrowser()
+        payload = await clear_cookies(browser, domain="example.com")
+        self.assertEqual(payload["cleared_count"], 1)
+        self.assertEqual(browser.clear_cookies_domain, "example.com")
+
+    async def test_get_storage_returns_local_and_session(self) -> None:
+        browser = _FakeCookieStorageBrowser()
+        browser.evaluate_results = [{"local": {"a": "1"}, "session": {"b": "2"}}]
+        payload = await get_storage(browser, kind="both")
+        self.assertEqual(payload["local"], {"a": "1"})
+        self.assertEqual(payload["session"], {"b": "2"})
+
+    async def test_set_storage_returns_applied_count(self) -> None:
+        browser = _FakeCookieStorageBrowser()
+        browser.evaluate_results = [{"kind": "local", "applied_count": 2}]
+        payload = await set_storage(
+            browser,
+            kind="local",
+            entries={"x": "1", "y": "2"},
+            clear_first=True,
+        )
+        self.assertEqual(payload["kind"], "local")
+        self.assertEqual(payload["applied_count"], 2)
+
+    async def test_clear_storage_returns_cleared_flag(self) -> None:
+        browser = _FakeCookieStorageBrowser()
+        browser.evaluate_results = [{"kind": "both", "cleared": True}]
+        payload = await clear_storage(browser, kind="both")
+        self.assertTrue(payload["cleared"])
 
 
 if __name__ == "__main__":

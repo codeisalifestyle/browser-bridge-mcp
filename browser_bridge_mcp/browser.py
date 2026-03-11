@@ -636,6 +636,42 @@ class BridgeBrowser:
         return [self._cookie_to_dict(cookie) for cookie in raw_cookies or []]
 
     @staticmethod
+    def _cookie_domain_matches(cookie_domain: str, target_domain: str) -> bool:
+        normalized_cookie = cookie_domain.lstrip(".").strip().lower()
+        normalized_target = target_domain.strip().lower()
+        return normalized_cookie == normalized_target or normalized_cookie.endswith(
+            f".{normalized_target}"
+        )
+
+    async def clear_cookies(self, *, domain: str | None = None) -> int:
+        cookies = await self.get_cookies()
+        if domain is None:
+            await self.tab.send(self._cdp_storage.clear_cookies())
+            return len(cookies)
+
+        cleared_count = 0
+        for cookie in cookies:
+            name = str(cookie.get("name", "") or "")
+            cookie_domain = str(cookie.get("domain", "") or "")
+            if not name or not cookie_domain:
+                continue
+            if not self._cookie_domain_matches(cookie_domain, domain):
+                continue
+            path = str(cookie.get("path", "/") or "/")
+            try:
+                await self.tab.send(
+                    self._cdp_network.delete_cookies(
+                        name=name,
+                        domain=cookie_domain,
+                        path=path,
+                    )
+                )
+                cleared_count += 1
+            except Exception as exc:
+                logger.debug("Could not delete cookie '%s' (%s): %s", name, cookie_domain, exc)
+        return cleared_count
+
+    @staticmethod
     def _cookie_to_dict(cookie: Any) -> dict[str, Any]:
         if isinstance(cookie, dict):
             return cookie
