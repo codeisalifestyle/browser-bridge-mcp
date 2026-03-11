@@ -1,64 +1,128 @@
 # browser-bridge-mcp
 
-Stealth-capable browser bridge MCP server for custom `nodriver` instances.
+MCP browser bridge that gives AI clients full access to a live browser environment.
 
-This project lets MCP-enabled AI clients control either:
+The core model is simple: your AI can either create a new browser session or attach to an existing one. That makes this ideal for autonomous web automation development and testing workflows. Under the hood, it uses `nodriver` as the browser automation runtime.
 
-- a browser session launched by the MCP server, or
-- an already running browser (attach mode via host/port, ws URL, or state file).
+## MCP in 30 seconds
 
-It is designed for automation development workflows where you need:
+- **MCP (Model Context Protocol)** is a standard for giving AI clients access to tools.
+- **This repo is an MCP server** that exposes browser automation tools.
+- **Your AI client runs it as a command** (usually over `stdio` transport).
 
-- persistent browser profiles,
-- stealth-oriented runtime behavior,
-- agentic inspection and control (DOM/query/click/type/scroll/html),
-- quick observability (captured console and fetch/xhr network metadata).
+## Why integrate this into your AI client
 
-## Features
+- **Launch or attach sessions**: start a clean browser session with `session_start` or connect to an existing browser with `session_attach`.
+- **Full browser control**: navigate, click, type, scroll, evaluate scripts, inspect DOM/HTML, and take screenshots.
+- **Built for autonomous workflows**: useful for end-to-end automation building, regression checks, and web task execution loops.
+- **Better observability for agents**: capture console logs and network request metadata while the agent acts.
+- **Session-aware automation**: isolated session lifecycle (`start`, `list`, `get`, `stop`) and per-session action locking.
 
-- `session_start` / `session_attach` lifecycle
-- Session isolation and per-session action locking
-- Browser tools:
-  - `browser_url`
-  - `browser_navigate`
-  - `browser_snapshot`
-  - `browser_query`
-  - `browser_click`
-  - `browser_type`
-  - `browser_scroll`
-  - `browser_wait`
-  - `browser_wait_for_selector`
-  - `browser_html`
-  - `browser_console_messages`
-  - `browser_network_requests`
-  - `browser_take_screenshot`
-  - `browser_evaluate`
+## Quick Start (recommended)
 
-## Installation
+### 1) Install prerequisites
 
-Python `>=3.10,<3.14` (Python `3.14` is currently not supported due to an upstream `nodriver` issue).
+- Python `>=3.10,<3.14` (Python `3.14` is currently not supported due to an upstream `nodriver` issue)
+- A Chromium-based browser installed (Chrome or Edge)
+- Optional but recommended: `pipx` (for easy isolated CLI installs)
+
+Install `pipx` (optional, recommended) on macOS:
+
+```bash
+brew install pipx
+pipx ensurepath
+```
+
+Install `pipx` (optional, recommended) on Linux:
+
+```bash
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+```
+
+Install `pipx` (optional, recommended) on Windows (PowerShell):
+
+```powershell
+py -m pip install --user pipx
+py -m pipx ensurepath
+```
+
+### 2) Install `browser-bridge-mcp`
+
+Option A (recommended): install with `pipx`
+
+```bash
+pipx install "git+https://github.com/codeisalifestyle/browser-bridge-mcp.git"
+```
+
+Option B (no `pipx`): install in a dedicated virtual environment
+
+```bash
+python3 -m venv ~/.venvs/browser-bridge-mcp
+source ~/.venvs/browser-bridge-mcp/bin/activate
+pip install "git+https://github.com/codeisalifestyle/browser-bridge-mcp.git"
+```
+
+Verify:
+
+```bash
+browser-bridge-mcp --help
+```
+
+### 3) Add it to your MCP client
+
+Most MCP-enabled clients accept a config shaped like this:
+
+```json
+{
+  "mcpServers": {
+    "browser-bridge-mcp": {
+      "command": "browser-bridge-mcp",
+      "args": ["--transport", "stdio"]
+    }
+  }
+}
+```
+
+If your client cannot find the command, use an absolute path:
+
+```bash
+# macOS / Linux
+which browser-bridge-mcp
+
+# Windows (PowerShell)
+where.exe browser-bridge-mcp
+```
+
+Then set `"command"` to that full path.
+
+If you used Option B, your command path is typically:
+
+```bash
+~/.venvs/browser-bridge-mcp/bin/browser-bridge-mcp
+```
+
+### 4) First-use test in your AI client
+
+After reloading/restarting your AI client, ask it:
+
+1. "Call `session_start` with default settings."
+2. "Call `browser_navigate` to `https://example.com`."
+3. "Call `browser_snapshot`."
+4. "Call `session_stop`."
+
+If these succeed, installation is complete.
+
+## Alternative: local dev install (for contributors)
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
-```
-
-## Run Server
-
-### stdio transport (recommended for local MCP clients)
-
-```bash
 browser-bridge-mcp --transport stdio
 ```
 
-### streamable-http transport
-
-```bash
-browser-bridge-mcp --transport streamable-http --host 127.0.0.1 --port 8000
-```
-
-## MCP Client Config Example
+Client config for this mode:
 
 ```json
 {
@@ -72,13 +136,69 @@ browser-bridge-mcp --transport streamable-http --host 127.0.0.1 --port 8000
 }
 ```
 
-## Typical Flow
+## Core tools exposed
 
-1. Call `session_start` (or `session_attach`).
-2. Use browser tools to navigate and inspect state.
-3. Call `session_stop` when done.
+### Session lifecycle
 
-## Safety Notes
+- `session_start`
+- `session_attach`
+- `session_list`
+- `session_get`
+- `session_stop`
+- `session_stop_all`
+
+### Browser actions
+
+- `browser_url`
+- `browser_navigate`
+- `browser_snapshot`
+- `browser_query`
+- `browser_click`
+- `browser_type`
+- `browser_scroll`
+- `browser_wait`
+- `browser_wait_for_selector`
+- `browser_html`
+- `browser_console_messages`
+- `browser_network_requests`
+- `browser_take_screenshot`
+- `browser_evaluate`
+
+## Typical flow
+
+1. Start or attach a session (`session_start` or `session_attach`).
+2. Use browser tools to automate and inspect state.
+3. Stop the session (`session_stop`) when done.
+
+## Troubleshooting
+
+- **"command not found: browser-bridge-mcp"**
+  - Run `pipx ensurepath`, restart terminal and AI client, then retry.
+  - Use absolute command path from `which browser-bridge-mcp`.
+- **Python 3.14 errors**
+  - Use Python 3.13 or lower.
+- **Browser fails to launch in restricted environments**
+  - Try `session_start` with `sandbox=false`.
+- **MCP client does not show tools**
+  - Confirm JSON syntax is valid.
+  - Confirm transport is `stdio`.
+  - Fully restart the AI client after editing MCP config.
+
+## Run server manually
+
+### stdio transport (recommended for local MCP clients)
+
+```bash
+browser-bridge-mcp --transport stdio
+```
+
+### streamable-http transport
+
+```bash
+browser-bridge-mcp --transport streamable-http --host 127.0.0.1 --port 8000
+```
+
+## Safety notes
 
 - Use this only on sites and accounts where you are authorized.
 - Respect website Terms of Service and local regulations.
