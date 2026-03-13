@@ -22,9 +22,9 @@
    - FastMCP tool surface for MCP clients.
    - Lifecycle cleanup hook that closes all sessions on shutdown.
 
-## Extension points
+## Capability highlights
 
-- Add explicit tab management tools.
-- Add CDP-level network capture for richer request/response detail.
-- Add policy layer (domain allowlist, read-only mode).
-- Add session trace recording/replay.
+- Explicit tab management (`browser_tab_*`).
+- CDP-level network capture tools.
+- Policy layer (domain allowlist/blocklist, read-only mode).
+- Session trace recording and replay.

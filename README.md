@@ -202,7 +202,6 @@ Client config for this mode:
 ## Project docs
 
 - Architecture: `docs/architecture.md`
-- Roadmap: `docs/roadmap.md`
 
 ## Typical flow
 
