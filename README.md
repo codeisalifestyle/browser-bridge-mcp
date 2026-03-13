@@ -1,10 +1,10 @@
 # browser-bridge-mcp
 
-MCP browser bridge that gives AI clients full access to a live browser environment.
+MCP server that gives AI clients full access to a live browser environment.
 
-The core model is simple: your AI can either create a new browser session or attach to an existing one. That makes this ideal for autonomous web automation development and testing workflows. Under the hood, it uses `nodriver` as the browser automation runtime.
+Your AI client can either start a new browser session or attach to an existing one. This makes it useful for autonomous web automation, regression checks, and browser-based workflows. Under the hood, it uses `nodriver` as the automation runtime.
 
-## MCP in 30 seconds
+## What this server provides
 
 - **MCP (Model Context Protocol)** is a standard for giving AI clients access to tools.
 - **This repo is an MCP server** that exposes browser automation tools.
@@ -113,12 +113,13 @@ After reloading/restarting your AI client, ask it:
 
 If these succeed, installation is complete.
 
-## Alternative: local dev install (for contributors)
+## Development setup
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
+pytest -q
 browser-bridge-mcp --transport stdio
 ```
 
@@ -198,17 +199,10 @@ Client config for this mode:
 - `browser_take_screenshot`
 - `browser_evaluate`
 
-## Product planning docs
+## Project docs
 
+- Architecture: `docs/architecture.md`
 - Roadmap: `docs/roadmap.md`
-- Navigation helpers: completed (PRD removed)
-- Advanced wait primitives: completed (PRD removed)
-- Tab management: completed (PRD removed)
-- Policy and guardrails: completed (PRD removed)
-- Dialog/upload/download: completed (PRD removed)
-- Cookie/storage management: completed (PRD removed)
-- CDP network capture: completed (PRD removed)
-- Session trace + replay: completed (PRD removed)
 
 ## Typical flow
 
