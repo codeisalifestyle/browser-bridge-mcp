@@ -12,7 +12,8 @@ license = { text = "MIT" }
 authors = [{ name = "Gianluca" }]
 dependencies = [
   "mcp>=1.26.0",
-  "nodriver>=0.48",
+  "nodriver @ git+https://github.com/codeisalifestyle/nodriver-reforged.git",
+  "opencv-python>=4.8",
 ]
 
 [project.scripts]

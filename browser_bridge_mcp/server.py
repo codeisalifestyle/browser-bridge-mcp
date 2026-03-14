@@ -42,6 +42,7 @@ from .actions import (
     set_storage,
     scroll_page,
     snapshot_interactive,
+    solve_cloudflare,
     start_network_capture,
     stop_network_capture,
     switch_tab,
@@ -962,6 +963,29 @@ def create_server(
                 kind=kind,
             ),
             action_args={"kind": kind},
+        )
+
+    @mcp.tool(
+        name="browser_solve_cloudflare",
+        description="Detect and solve a Cloudflare Turnstile challenge by clicking the verification checkbox.",
+    )
+    async def browser_solve_cloudflare(
+        session_id: str,
+        timeout_seconds: float = 15.0,
+        max_retries: int = 5,
+    ) -> dict[str, Any]:
+        return await manager.run_action(
+            session_id=session_id,
+            action_name="browser_solve_cloudflare",
+            operation=lambda browser: solve_cloudflare(
+                browser,
+                timeout_seconds=timeout_seconds,
+                max_retries=max_retries,
+            ),
+            action_args={
+                "timeout_seconds": timeout_seconds,
+                "max_retries": max_retries,
+            },
         )
 
     @mcp.tool(name="browser_take_screenshot", description="Capture a screenshot to disk.")

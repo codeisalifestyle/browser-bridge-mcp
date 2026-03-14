@@ -1271,6 +1271,21 @@ async def get_network_requests(
     return payload
 
 
+async def solve_cloudflare(
+    browser: BridgeBrowser,
+    *,
+    timeout_seconds: float = 15.0,
+    max_retries: int = 5,
+) -> dict[str, Any]:
+    result = await browser.solve_cloudflare(
+        timeout_seconds=max(1.0, float(timeout_seconds)),
+        max_retries=max(1, int(max_retries)),
+    )
+    page = await get_url_and_title(browser)
+    result.update(page)
+    return result
+
+
 async def take_screenshot(
     browser: BridgeBrowser,
     *,

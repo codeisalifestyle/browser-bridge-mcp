@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from pathlib import Path
 from typing import Any
 
 
@@ -981,6 +980,23 @@ class BridgeBrowser:
             if hasattr(cookie, field):
                 result[field] = getattr(cookie, field)
         return result
+
+    async def solve_cloudflare(
+        self,
+        *,
+        timeout_seconds: float = 15.0,
+        max_retries: int = 5,
+    ) -> dict[str, Any]:
+        """Detect and solve a Cloudflare Turnstile challenge.
+
+        Delegates to nodriver-reforged's ``tab.verify_cf()`` which handles
+        dark/light mode templates and HiDPI/Retina displays.
+        """
+        solved = await self.tab.verify_cf(
+            max_retries=max_retries,
+            timeout=timeout_seconds,
+        )
+        return {"solved": bool(solved)}
 
     @property
     def connection_host(self) -> str | None:
