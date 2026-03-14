@@ -129,9 +129,8 @@ Client config for this mode:
 {
   "mcpServers": {
     "browser-bridge-mcp": {
-      "command": "/absolute/path/to/.venv/bin/browser-bridge-mcp",
-      "args": ["--transport", "stdio"],
-      "cwd": "/absolute/path/to/browser-bridge-mcp"
+      "command": "/absolute/path/to/browser-bridge-mcp",
+      "args": ["--transport", "stdio"]
     }
   }
 }
