@@ -12,7 +12,7 @@ Your AI client can either start a new browser session or attach to an existing o
 
 ## Why integrate this into your AI client
 
-- **Launch or attach sessions**: start a clean browser session with `session_start` or connect to an existing browser with `session_attach`.
+- **Launch or attach sessions**: start with `session_start` (now profile/config aware) or connect with `session_attach`.
 - **Full browser control**: navigate, click, type, scroll, evaluate scripts, inspect DOM/HTML, and take screenshots.
 - **Built for autonomous workflows**: useful for end-to-end automation building, regression checks, and web task execution loops.
 - **Better observability for agents**: capture console logs and network request metadata while the agent acts.
@@ -113,6 +113,32 @@ After reloading/restarting your AI client, ask it:
 
 If these succeed, installation is complete.
 
+## Centralized browser state store
+
+`browser-bridge-mcp` now keeps reusable browser state in one place:
+
+- Default root: `~/.browser-bridge-mcp`
+- Override with env var: `BROWSER_BRIDGE_MCP_HOME=/custom/path`
+- Override per server run: `browser-bridge-mcp --state-root /custom/path`
+
+Within that root:
+
+- `profiles/` stores persistent Chromium profile directories (user data dirs)
+- `cookies/` stores reusable cookie jar JSON files
+- `configs/` stores launch configs used by `session_start`
+
+`session_start` supports optional `profile`, `cookie_name`, and `launch_config` inputs.
+It resolves launch settings in this order:
+
+1. Built-in defaults
+2. Saved default launch config (`configs/default.json`)
+3. Profile-linked launch config (if profile defines one)
+4. Selected `launch_config` (if provided)
+5. Profile `launch_overrides`
+6. Explicit `session_start` arguments
+
+This lets your AI client map account-oriented tasks to stable browser identities (profile + cookies + launch settings) without repeatedly passing raw paths.
+
 ## Development setup
 
 ```bash
@@ -144,6 +170,16 @@ Client config for this mode:
 - `session_attach`
 - `session_list`
 - `session_get`
+- `session_state_paths`
+- `session_profile_list`
+- `session_profile_get`
+- `session_profile_set`
+- `session_profile_delete`
+- `session_launch_config_list`
+- `session_launch_config_get`
+- `session_launch_config_set`
+- `session_launch_config_delete`
+- `session_cookie_jar_list`
 - `session_set_policy`
 - `session_get_policy`
 - `session_set_download_dir`

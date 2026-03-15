@@ -17,6 +17,14 @@ from . import actions as action_ops
 from .actions import ensure_observers, get_url_and_title
 from .browser import BridgeBrowser
 from .cookies import load_cookie_file
+from .state_store import (
+    DEFAULT_LAUNCH_CONFIG_NAME,
+    BrowserStateStore,
+    effective_launch_options,
+    merge_launch_options,
+    normalize_launch_options,
+    validate_name,
+)
 
 
 READ_ONLY_BLOCKED_ACTIONS = {
@@ -213,9 +221,10 @@ class BrowserSession:
 class BrowserSessionManager:
     """Owns active browser sessions and serialized action execution."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, state_root: str | None = None) -> None:
         self._sessions: dict[str, BrowserSession] = {}
         self._sessions_lock = asyncio.Lock()
+        self._state_store = BrowserStateStore(state_root=state_root)
 
     async def list_sessions(self) -> list[dict[str, Any]]:
         async with self._sessions_lock:
@@ -238,6 +247,82 @@ class BrowserSessionManager:
         if session is None:
             raise ValueError(f"Session not found: {session_id}")
         return session
+
+    async def get_state_paths(self) -> dict[str, Any]:
+        return self._state_store.paths_summary()
+
+    async def list_profiles(self) -> dict[str, Any]:
+        profiles = self._state_store.list_profiles()
+        return {
+            "count": len(profiles),
+            "profiles": profiles,
+        }
+
+    async def get_profile(self, *, profile: str) -> dict[str, Any]:
+        return self._state_store.resolve_profile_reference(profile)
+
+    async def set_profile(
+        self,
+        *,
+        profile: str,
+        description: str | None = None,
+        account_aliases: list[str] | None = None,
+        cookie_name: str | None = None,
+        launch_config: str | None = None,
+        launch_overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._state_store.set_profile(
+            profile_name=profile,
+            description=description,
+            account_aliases=account_aliases,
+            cookie_name=cookie_name,
+            launch_config=launch_config,
+            launch_overrides=launch_overrides,
+        )
+
+    async def delete_profile(
+        self,
+        *,
+        profile: str,
+        delete_user_data_dir: bool = False,
+    ) -> dict[str, Any]:
+        return self._state_store.delete_profile(
+            profile=profile,
+            delete_user_data_dir=delete_user_data_dir,
+        )
+
+    async def list_launch_configs(self) -> dict[str, Any]:
+        configs = self._state_store.list_launch_configs()
+        return {
+            "count": len(configs),
+            "configs": configs,
+        }
+
+    async def get_launch_config(self, *, config_name: str = DEFAULT_LAUNCH_CONFIG_NAME) -> dict[str, Any]:
+        return self._state_store.get_launch_config(config_name)
+
+    async def set_launch_config(
+        self,
+        *,
+        config_name: str = DEFAULT_LAUNCH_CONFIG_NAME,
+        values: dict[str, Any] | None = None,
+        merge: bool = True,
+    ) -> dict[str, Any]:
+        return self._state_store.set_launch_config(
+            config_name=config_name,
+            values=values,
+            merge=merge,
+        )
+
+    async def delete_launch_config(self, *, config_name: str) -> dict[str, Any]:
+        return self._state_store.delete_launch_config(config_name)
+
+    async def list_cookie_jars(self) -> dict[str, Any]:
+        jars = self._state_store.list_cookie_jars()
+        return {
+            "count": len(jars),
+            "cookie_jars": jars,
+        }
 
     async def set_policy(
         self,
@@ -699,35 +784,201 @@ class BrowserSessionManager:
             for idx, row in enumerate(session.trace_events):
                 row["index"] = idx
 
-    async def start_session(
+    def _resolve_profile_for_launch(
+        self,
+        profile_reference: str | None,
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        if not profile_reference:
+            return None, None
+        try:
+            profile_payload = self._state_store.resolve_profile_reference(profile_reference)
+            return str(profile_payload["name"]), profile_payload
+        except ValueError:
+            normalized = validate_name(profile_reference, label="profile name")
+            profile_payload = self._state_store.set_profile(profile_name=normalized)
+            return normalized, profile_payload
+
+    def _resolve_launch_context(
         self,
         *,
-        session_id: str | None,
-        headless: bool,
+        headless: bool | None,
         start_url: str | None,
         user_data_dir: str | None,
         browser_args: list[str] | None,
         browser_executable_path: str | None,
-        sandbox: bool,
+        sandbox: bool | None,
         cookie_file: str | None,
         cookie_fallback_domain: str | None,
+        profile: str | None,
+        cookie_name: str | None,
+        launch_config: str | None,
+    ) -> dict[str, Any]:
+        explicit = normalize_launch_options(
+            {
+                key: value
+                for key, value in {
+                    "headless": headless,
+                    "start_url": start_url,
+                    "user_data_dir": user_data_dir,
+                    "browser_args": browser_args,
+                    "browser_executable_path": browser_executable_path,
+                    "sandbox": sandbox,
+                    "cookie_file": cookie_file,
+                    "cookie_fallback_domain": cookie_fallback_domain,
+                    "profile": profile,
+                    "cookie_name": cookie_name,
+                }.items()
+                if value is not None
+            }
+        )
+
+        default_config = self._state_store.get_launch_config(DEFAULT_LAUNCH_CONFIG_NAME)
+        default_values = default_config.get("values", {})
+
+        selected_launch_config_name: str | None = None
+        selected_launch_config_values: dict[str, Any] = {}
+        if launch_config:
+            selected_launch_config_name = validate_name(launch_config, label="launch config name")
+            selected_launch_config_values = self._state_store.get_launch_config(
+                selected_launch_config_name
+            ).get("values", {})
+
+        initial_values = merge_launch_options(default_values, selected_launch_config_values, explicit)
+        profile_reference = (
+            str(profile).strip()
+            if isinstance(profile, str) and profile.strip()
+            else initial_values.get("profile")
+        )
+        resolved_profile_name, profile_payload = self._resolve_profile_for_launch(profile_reference)
+
+        profile_launch_config_name: str | None = None
+        profile_launch_config_values: dict[str, Any] = {}
+        profile_launch_overrides: dict[str, Any] = {}
+        if profile_payload:
+            profile_launch_config_name = profile_payload.get("launch_config")
+            if profile_launch_config_name and not selected_launch_config_name:
+                profile_launch_config_values = self._state_store.get_launch_config(
+                    profile_launch_config_name
+                ).get("values", {})
+            profile_launch_overrides = normalize_launch_options(
+                profile_payload.get("launch_overrides")
+            )
+            profile_cookie_name = profile_payload.get("cookie_name")
+            if isinstance(profile_cookie_name, str) and profile_cookie_name.strip():
+                profile_launch_overrides["cookie_name"] = profile_cookie_name
+            profile_launch_overrides["profile"] = resolved_profile_name
+
+        resolved_values = effective_launch_options(
+            default_values,
+            profile_launch_config_values,
+            selected_launch_config_values,
+            profile_launch_overrides,
+            explicit,
+        )
+        if resolved_profile_name:
+            resolved_values["profile"] = resolved_profile_name
+
+        resolved_user_data_dir = resolved_values.get("user_data_dir")
+        if resolved_profile_name and not resolved_user_data_dir:
+            resolved_user_data_dir = str(
+                self._state_store.profile_dir(resolved_profile_name, create=True)
+            )
+            resolved_values["user_data_dir"] = resolved_user_data_dir
+        elif isinstance(resolved_user_data_dir, str) and resolved_user_data_dir.strip():
+            resolved_values["user_data_dir"] = str(
+                Path(resolved_user_data_dir).expanduser().resolve()
+            )
+
+        cookie_file_source: str | None = None
+        resolved_cookie_file: str | None = None
+        cookie_file_from_values = resolved_values.get("cookie_file")
+        if isinstance(cookie_file_from_values, str) and cookie_file_from_values.strip():
+            resolved_cookie_file = str(Path(cookie_file_from_values).expanduser())
+            cookie_file_source = "cookie_file"
+        else:
+            cookie_name_value = resolved_values.get("cookie_name")
+            if isinstance(cookie_name_value, str) and cookie_name_value.strip():
+                normalized_cookie_name = validate_name(cookie_name_value, label="cookie jar name")
+                resolved_values["cookie_name"] = normalized_cookie_name
+                resolved_cookie_file = str(self._state_store.cookie_jar_path(normalized_cookie_name))
+                cookie_file_source = "cookie_jar"
+        resolved_values["cookie_file"] = resolved_cookie_file
+
+        return {
+            "values": resolved_values,
+            "state_paths": self._state_store.paths_summary(),
+            "default_launch_config": default_config,
+            "selected_launch_config_name": selected_launch_config_name,
+            "selected_launch_config_values": selected_launch_config_values,
+            "profile_launch_config_name": profile_launch_config_name,
+            "profile": profile_payload,
+            "profile_name": resolved_profile_name,
+            "cookie_file_source": cookie_file_source,
+        }
+
+    async def start_session(
+        self,
+        *,
+        session_id: str | None,
+        headless: bool | None,
+        start_url: str | None,
+        user_data_dir: str | None,
+        browser_args: list[str] | None,
+        browser_executable_path: str | None,
+        sandbox: bool | None,
+        cookie_file: str | None,
+        cookie_fallback_domain: str | None,
+        profile: str | None,
+        cookie_name: str | None,
+        launch_config: str | None,
     ) -> dict[str, Any]:
         resolved_session_id = session_id or f"sess_{uuid.uuid4().hex[:12]}"
-        browser = BridgeBrowser(
+        launch_context = self._resolve_launch_context(
             headless=headless,
+            start_url=start_url,
             user_data_dir=user_data_dir,
             browser_args=browser_args,
             browser_executable_path=browser_executable_path,
             sandbox=sandbox,
+            cookie_file=cookie_file,
+            cookie_fallback_domain=cookie_fallback_domain,
+            profile=profile,
+            cookie_name=cookie_name,
+            launch_config=launch_config,
+        )
+        launch_values = launch_context["values"]
+        resolved_headless = bool(launch_values.get("headless", False))
+        resolved_start_url = launch_values.get("start_url")
+        resolved_user_data_dir = launch_values.get("user_data_dir")
+        resolved_browser_args = list(launch_values.get("browser_args") or [])
+        resolved_browser_executable_path = launch_values.get("browser_executable_path")
+        resolved_sandbox = bool(launch_values.get("sandbox", True))
+        resolved_cookie_file = launch_values.get("cookie_file")
+        resolved_cookie_fallback_domain = launch_values.get("cookie_fallback_domain")
+
+        browser = BridgeBrowser(
+            headless=resolved_headless,
+            user_data_dir=resolved_user_data_dir,
+            browser_args=resolved_browser_args,
+            browser_executable_path=resolved_browser_executable_path,
+            sandbox=resolved_sandbox,
         )
         await browser.start()
         try:
-            if cookie_file:
-                cookies = load_cookie_file(cookie_file)
-                await browser.set_cookies(cookies, fallback_domain=cookie_fallback_domain)
+            cookie_applied_count = 0
+            cookie_skipped_reason: str | None = None
+            if resolved_cookie_file:
+                cookie_path = Path(str(resolved_cookie_file)).expanduser()
+                from_cookie_jar = launch_context["cookie_file_source"] == "cookie_jar"
+                if from_cookie_jar and not cookie_path.exists():
+                    cookie_skipped_reason = "cookie_jar_not_found"
+                else:
+                    cookies = load_cookie_file(str(cookie_path))
+                    cookie_applied_count = len(cookies)
+                    await browser.set_cookies(cookies, fallback_domain=resolved_cookie_fallback_domain)
 
-            if start_url:
-                await browser.goto(start_url, wait_seconds=1.2)
+            if resolved_start_url:
+                await browser.goto(str(resolved_start_url), wait_seconds=1.2)
 
             await ensure_observers(browser)
             page = await get_url_and_title(browser)
@@ -736,17 +987,29 @@ class BrowserSessionManager:
                 browser=browser,
                 mode="launch",
                 created_at=_utc_now_iso(),
-                headless=headless,
+                headless=resolved_headless,
                 connection_host=browser.connection_host,
                 connection_port=browser.connection_port,
                 websocket_url=browser.websocket_url,
                 metadata={
-                    "cookie_file": str(Path(cookie_file).expanduser()) if cookie_file else None,
-                    "cookie_fallback_domain": cookie_fallback_domain,
-                    "user_data_dir": user_data_dir,
-                    "browser_args": list(browser_args or []),
-                    "browser_executable_path": browser_executable_path,
-                    "sandbox": sandbox,
+                    "state_paths": launch_context["state_paths"],
+                    "profile": launch_context["profile_name"],
+                    "profile_reference": profile,
+                    "launch_config": launch_context["selected_launch_config_name"],
+                    "profile_launch_config": launch_context["profile_launch_config_name"],
+                    "cookie_name": launch_values.get("cookie_name"),
+                    "cookie_file": str(Path(resolved_cookie_file).expanduser())
+                    if resolved_cookie_file
+                    else None,
+                    "cookie_file_source": launch_context["cookie_file_source"],
+                    "cookie_fallback_domain": resolved_cookie_fallback_domain,
+                    "cookie_applied_count": cookie_applied_count,
+                    "cookie_skipped_reason": cookie_skipped_reason,
+                    "start_url": resolved_start_url,
+                    "user_data_dir": resolved_user_data_dir,
+                    "browser_args": list(resolved_browser_args),
+                    "browser_executable_path": resolved_browser_executable_path,
+                    "sandbox": resolved_sandbox,
                 },
                 last_known_url=page.get("url"),
                 last_known_title=page.get("title"),

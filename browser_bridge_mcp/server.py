@@ -67,8 +67,9 @@ def create_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     log_level: str = "INFO",
+    state_root: str | None = None,
 ) -> FastMCP:
-    manager = BrowserSessionManager()
+    manager = BrowserSessionManager(state_root=state_root)
 
     @asynccontextmanager
     async def lifespan(_: FastMCP):
@@ -93,14 +94,17 @@ def create_server(
     @mcp.tool(name="session_start", description="Launch a new browser session.")
     async def session_start(
         session_id: str | None = None,
-        headless: bool = False,
-        start_url: str | None = "about:blank",
+        headless: bool | None = None,
+        start_url: str | None = None,
         user_data_dir: str | None = None,
         browser_args: list[str] | None = None,
         browser_executable_path: str | None = None,
-        sandbox: bool = True,
+        sandbox: bool | None = None,
         cookie_file: str | None = None,
         cookie_fallback_domain: str | None = None,
+        profile: str | None = None,
+        cookie_name: str | None = None,
+        launch_config: str | None = None,
     ) -> dict[str, Any]:
         return await manager.start_session(
             session_id=session_id,
@@ -112,6 +116,9 @@ def create_server(
             sandbox=sandbox,
             cookie_file=cookie_file,
             cookie_fallback_domain=cookie_fallback_domain,
+            profile=profile,
+            cookie_name=cookie_name,
+            launch_config=launch_config,
         )
 
     @mcp.tool(
@@ -144,6 +151,80 @@ def create_server(
     async def session_get(session_id: str) -> dict[str, Any]:
         session = await manager.get_session(session_id)
         return session.summary()
+
+    @mcp.tool(
+        name="session_state_paths",
+        description="Get centralized directories used for profiles, cookies, and configs.",
+    )
+    async def session_state_paths() -> dict[str, Any]:
+        return await manager.get_state_paths()
+
+    @mcp.tool(name="session_profile_list", description="List saved browser profiles.")
+    async def session_profile_list() -> dict[str, Any]:
+        return await manager.list_profiles()
+
+    @mcp.tool(name="session_profile_get", description="Get one saved profile by name or account alias.")
+    async def session_profile_get(profile: str) -> dict[str, Any]:
+        return await manager.get_profile(profile=profile)
+
+    @mcp.tool(name="session_profile_set", description="Create or update a saved profile.")
+    async def session_profile_set(
+        profile: str,
+        description: str | None = None,
+        account_aliases: list[str] | None = None,
+        cookie_name: str | None = None,
+        launch_config: str | None = None,
+        launch_overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return await manager.set_profile(
+            profile=profile,
+            description=description,
+            account_aliases=account_aliases,
+            cookie_name=cookie_name,
+            launch_config=launch_config,
+            launch_overrides=launch_overrides,
+        )
+
+    @mcp.tool(name="session_profile_delete", description="Delete profile metadata or entire profile directory.")
+    async def session_profile_delete(
+        profile: str,
+        delete_user_data_dir: bool = False,
+    ) -> dict[str, Any]:
+        return await manager.delete_profile(
+            profile=profile,
+            delete_user_data_dir=delete_user_data_dir,
+        )
+
+    @mcp.tool(name="session_launch_config_list", description="List saved launch configs.")
+    async def session_launch_config_list() -> dict[str, Any]:
+        return await manager.list_launch_configs()
+
+    @mcp.tool(
+        name="session_launch_config_get",
+        description="Get one launch config (default name is 'default').",
+    )
+    async def session_launch_config_get(config_name: str = "default") -> dict[str, Any]:
+        return await manager.get_launch_config(config_name=config_name)
+
+    @mcp.tool(name="session_launch_config_set", description="Create or update a launch config.")
+    async def session_launch_config_set(
+        config_name: str = "default",
+        values: dict[str, Any] | None = None,
+        merge: bool = True,
+    ) -> dict[str, Any]:
+        return await manager.set_launch_config(
+            config_name=config_name,
+            values=values,
+            merge=merge,
+        )
+
+    @mcp.tool(name="session_launch_config_delete", description="Delete a launch config by name.")
+    async def session_launch_config_delete(config_name: str) -> dict[str, Any]:
+        return await manager.delete_launch_config(config_name=config_name)
+
+    @mcp.tool(name="session_cookie_jar_list", description="List centralized cookie jar files.")
+    async def session_cookie_jar_list() -> dict[str, Any]:
+        return await manager.list_cookie_jars()
 
     @mcp.tool(name="session_set_policy", description="Set runtime policy for one session.")
     async def session_set_policy(
@@ -1049,13 +1130,26 @@ def build_parser() -> argparse.ArgumentParser:
         default="INFO",
         help="Server log level",
     )
+    parser.add_argument(
+        "--state-root",
+        default=None,
+        help=(
+            "Optional root directory for centralized profiles/cookies/configs. "
+            "Defaults to ~/.browser-bridge-mcp or $BROWSER_BRIDGE_MCP_HOME."
+        ),
+    )
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    server = create_server(host=args.host, port=args.port, log_level=args.log_level)
+    server = create_server(
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
+        state_root=args.state_root,
+    )
     try:
         server.run(transport=args.transport)
     except KeyboardInterrupt:

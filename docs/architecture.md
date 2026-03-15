@@ -1,6 +1,6 @@
 # Architecture
 
-`browser-bridge-mcp` is split into four layers:
+`browser-bridge-mcp` is split into five layers:
 
 1. `browser_bridge_mcp/browser.py`
    - Nodriver adapter.
@@ -21,6 +21,11 @@
 4. `browser_bridge_mcp/server.py`
    - FastMCP tool surface for MCP clients.
    - Lifecycle cleanup hook that closes all sessions on shutdown.
+
+5. `browser_bridge_mcp/state_store.py`
+   - Centralized user-level storage for browser launch state.
+   - Manages reusable profile directories, cookie jars, and launch configs.
+   - Resolves saved defaults for `session_start` (profile/cookie/config aware launch).
 
 ## Capability highlights
 
