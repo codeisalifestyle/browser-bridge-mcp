@@ -238,11 +238,9 @@ Client config for this mode:
 
 - Architecture: `docs/architecture.md`
 
-## Typical flow
+## SKILL FILE
 
-1. Start or attach a session (`session_start` or `session_attach`).
-2. Use browser tools to automate and inspect state.
-3. Stop the session (`session_stop`) when done.
+- Skill: `skills/browser-bridge-mcp/SKILL.md`
 
 ## Troubleshooting
 
@@ -257,20 +255,6 @@ Client config for this mode:
   - Confirm JSON syntax is valid.
   - Confirm transport is `stdio`.
   - Fully restart the AI client after editing MCP config.
-
-## Run server manually
-
-### stdio transport (recommended for local MCP clients)
-
-```bash
-browser-bridge-mcp --transport stdio
-```
-
-### streamable-http transport
-
-```bash
-browser-bridge-mcp --transport streamable-http --host 127.0.0.1 --port 8000
-```
 
 ## Safety notes
 
