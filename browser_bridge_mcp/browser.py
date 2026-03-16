@@ -920,10 +920,34 @@ class BridgeBrowser:
             except Exception as exc:
                 logger.debug("Skipping cookie '%s': %s", name, exc)
 
-    async def get_cookies(self) -> list[dict[str, Any]]:
-        response = await self.tab.send(self._cdp_storage.get_cookies())
-        raw_cookies = response if isinstance(response, list) else getattr(response, "cookies", [])
-        return [self._cookie_to_dict(cookie) for cookie in raw_cookies or []]
+    async def get_cookies(self, *, timeout_seconds: float = 10.0) -> list[dict[str, Any]]:
+        timeout = max(1.0, float(timeout_seconds))
+        errors: list[str] = []
+
+        async def _via_storage() -> Any:
+            return await self.tab.send(self._cdp_storage.get_cookies())
+
+        try:
+            response = await asyncio.wait_for(_via_storage(), timeout=timeout)
+            raw_cookies = response if isinstance(response, list) else getattr(response, "cookies", [])
+            return [self._cookie_to_dict(cookie) for cookie in raw_cookies or []]
+        except Exception as exc:
+            errors.append(f"storage.get_cookies failed: {exc}")
+
+        get_all_cookies_cmd = getattr(self._cdp_network, "get_all_cookies", None)
+        get_cookies_cmd = getattr(self._cdp_network, "get_cookies", None)
+        command = get_all_cookies_cmd or get_cookies_cmd
+        if command is not None:
+            try:
+                response = await asyncio.wait_for(self.tab.send(command()), timeout=timeout)
+                raw_cookies = (
+                    response if isinstance(response, list) else getattr(response, "cookies", [])
+                )
+                return [self._cookie_to_dict(cookie) for cookie in raw_cookies or []]
+            except Exception as exc:
+                errors.append(f"network cookie query failed: {exc}")
+
+        raise RuntimeError("; ".join(errors) or "Could not fetch cookies.")
 
     @staticmethod
     def _cookie_domain_matches(cookie_domain: str, target_domain: str) -> bool:

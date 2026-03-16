@@ -224,15 +224,23 @@ class _FakeCookieStorageBrowser:
         self.set_cookies_args: tuple[list[dict[str, object]], str | None] | None = None
         self.clear_cookies_domain: str | None = None
         self.evaluate_results: list[object] = []
+        self.document_cookie = "sid=abc; theme=dark"
+        self.get_cookies_raises: Exception | None = None
+        self.get_cookies_timeout_seconds: float | None = None
 
     async def evaluate(self, script: str):
         if script == "document.title":
             return self._title
+        if script == "document.cookie":
+            return self.document_cookie
         if self.evaluate_results:
             return self.evaluate_results.pop(0)
         raise AssertionError(f"Unexpected script: {script}")
 
-    async def get_cookies(self) -> list[dict[str, object]]:
+    async def get_cookies(self, *, timeout_seconds: float = 10.0) -> list[dict[str, object]]:
+        self.get_cookies_timeout_seconds = timeout_seconds
+        if self.get_cookies_raises is not None:
+            raise self.get_cookies_raises
         return list(self._cookies)
 
     async def set_cookies(
@@ -578,9 +586,10 @@ class NetworkCaptureActionsTest(unittest.IsolatedAsyncioTestCase):
 class CookieStorageActionsTest(unittest.IsolatedAsyncioTestCase):
     async def test_get_cookies_returns_cookie_rows(self) -> None:
         browser = _FakeCookieStorageBrowser()
-        payload = await get_cookies(browser)
+        payload = await get_cookies(browser, domain=None, timeout_seconds=7.5)
         self.assertEqual(payload["count"], 1)
         self.assertEqual(payload["cookies"][0]["name"], "sid")
+        self.assertEqual(browser.get_cookies_timeout_seconds, 7.5)
 
     async def test_set_cookies_applies_valid_rows(self) -> None:
         browser = _FakeCookieStorageBrowser()
@@ -600,11 +609,53 @@ class CookieStorageActionsTest(unittest.IsolatedAsyncioTestCase):
         browser = _FakeCookieStorageBrowser()
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = str(Path(tmpdir) / "cookies.json")
-            payload = await save_cookies(browser, output_path=output_path, wrap_object=True)
+            payload = await save_cookies(
+                browser,
+                output_path=output_path,
+                wrap_object=True,
+                domain=None,
+                timeout_seconds=5.0,
+                allow_document_cookie_fallback=True,
+            )
             self.assertEqual(payload["saved_count"], 1)
+            self.assertFalse(payload["fallback_used"])
             data = json.loads(Path(output_path).read_text(encoding="utf-8"))
             self.assertIn("cookies", data)
             self.assertEqual(data["cookies"][0]["name"], "sid")
+
+    async def test_get_cookies_domain_filter(self) -> None:
+        browser = _FakeCookieStorageBrowser()
+        browser._cookies.append(
+            {
+                "name": "other",
+                "value": "xyz",
+                "domain": "another.test",
+                "path": "/",
+            }
+        )
+        payload = await get_cookies(browser, domain="example.com", timeout_seconds=10.0)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["cookies"][0]["domain"], "example.com")
+
+    async def test_save_cookies_uses_document_cookie_fallback(self) -> None:
+        browser = _FakeCookieStorageBrowser()
+        browser.get_cookies_raises = RuntimeError("simulated cookie API failure")
+        browser.tab.url = "https://x.com/home"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = str(Path(tmpdir) / "cookies.json")
+            payload = await save_cookies(
+                browser,
+                output_path=output_path,
+                wrap_object=True,
+                domain="x.com",
+                timeout_seconds=2.0,
+                allow_document_cookie_fallback=True,
+            )
+            self.assertTrue(payload["fallback_used"])
+            self.assertGreaterEqual(payload["saved_count"], 1)
+            data = json.loads(Path(output_path).read_text(encoding="utf-8"))
+            self.assertIn("cookies", data)
+            self.assertEqual(data["cookies"][0]["domain"], "x.com")
 
     async def test_clear_cookies_returns_cleared_count(self) -> None:
         browser = _FakeCookieStorageBrowser()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -916,6 +917,59 @@ class BrowserSessionManager:
             "cookie_file_source": cookie_file_source,
         }
 
+    def _is_managed_user_data_dir(self, user_data_dir: str) -> bool:
+        candidate = Path(user_data_dir).expanduser().resolve()
+        managed_root = self._state_store.profiles_dir.resolve()
+        return candidate == managed_root or managed_root in candidate.parents
+
+    def _prepare_ephemeral_user_data_dir(
+        self,
+        *,
+        source_user_data_dir: str,
+        profile_directory: str,
+    ) -> dict[str, Any]:
+        source_root = Path(source_user_data_dir).expanduser().resolve()
+        if not source_root.exists() or not source_root.is_dir():
+            raise FileNotFoundError(f"user_data_dir not found: {source_root}")
+
+        temp_root = Path(tempfile.mkdtemp(prefix="bbmcp-profile-clone-")).resolve()
+        copied_paths: list[str] = []
+
+        local_state_path = source_root / "Local State"
+        if local_state_path.exists():
+            shutil.copy2(local_state_path, temp_root / "Local State")
+            copied_paths.append(str(temp_root / "Local State"))
+
+        source_profile_dir = source_root / profile_directory
+        target_profile_dir = temp_root / profile_directory
+        if source_profile_dir.exists() and source_profile_dir.is_dir():
+            shutil.copytree(source_profile_dir, target_profile_dir, dirs_exist_ok=True)
+            copied_paths.append(str(target_profile_dir))
+        else:
+            # Fallback for uncommon layouts: copy entire root if profile dir is missing.
+            shutil.copytree(source_root, temp_root, dirs_exist_ok=True)
+            copied_paths.append(str(temp_root))
+
+        return {
+            "source_user_data_dir": str(source_root),
+            "ephemeral_user_data_dir": str(temp_root),
+            "profile_directory": profile_directory,
+            "copied_paths": copied_paths,
+        }
+
+    @staticmethod
+    def _cleanup_ephemeral_user_data_dir(session: BrowserSession | None) -> None:
+        if not session:
+            return
+        metadata = session.metadata if isinstance(session.metadata, dict) else {}
+        ephemeral_user_data_dir = metadata.get("ephemeral_user_data_dir")
+        if not isinstance(ephemeral_user_data_dir, str) or not ephemeral_user_data_dir.strip():
+            return
+        try:
+            shutil.rmtree(Path(ephemeral_user_data_dir).expanduser(), ignore_errors=True)
+        except Exception:
+            pass
+
     async def start_session(
         self,
         *,
@@ -931,6 +985,8 @@ class BrowserSessionManager:
         profile: str | None,
         cookie_name: str | None,
         launch_config: str | None,
+        duplicate_user_data_dir: bool | None = None,
+        profile_directory: str | None = None,
     ) -> dict[str, Any]:
         resolved_session_id = session_id or f"sess_{uuid.uuid4().hex[:12]}"
         launch_context = self._resolve_launch_context(
@@ -955,6 +1011,40 @@ class BrowserSessionManager:
         resolved_sandbox = bool(launch_values.get("sandbox", True))
         resolved_cookie_file = launch_values.get("cookie_file")
         resolved_cookie_fallback_domain = launch_values.get("cookie_fallback_domain")
+        resolved_profile_directory = (
+            str(profile_directory).strip()
+            if isinstance(profile_directory, str) and str(profile_directory).strip()
+            else "Default"
+        )
+        duplicate_applied = False
+        duplicate_source_user_data_dir: str | None = None
+        ephemeral_user_data_dir: str | None = None
+        duplicate_copy_paths: list[str] = []
+
+        should_duplicate_user_data_dir = bool(duplicate_user_data_dir)
+        if duplicate_user_data_dir is None and isinstance(resolved_user_data_dir, str):
+            # Default safety behavior:
+            # if caller points at an external browser profile, clone it first so we avoid
+            # disrupting the user's active browser instance.
+            should_duplicate_user_data_dir = not self._is_managed_user_data_dir(
+                resolved_user_data_dir
+            )
+
+        if isinstance(resolved_user_data_dir, str) and should_duplicate_user_data_dir:
+            clone_info = self._prepare_ephemeral_user_data_dir(
+                source_user_data_dir=resolved_user_data_dir,
+                profile_directory=resolved_profile_directory,
+            )
+            duplicate_applied = True
+            duplicate_source_user_data_dir = clone_info["source_user_data_dir"]
+            ephemeral_user_data_dir = clone_info["ephemeral_user_data_dir"]
+            duplicate_copy_paths = list(clone_info["copied_paths"])
+            resolved_user_data_dir = ephemeral_user_data_dir
+
+        if resolved_profile_directory and not any(
+            arg.startswith("--profile-directory=") for arg in resolved_browser_args
+        ):
+            resolved_browser_args.append(f"--profile-directory={resolved_profile_directory}")
 
         browser = BridgeBrowser(
             headless=resolved_headless,
@@ -1007,6 +1097,12 @@ class BrowserSessionManager:
                     "cookie_skipped_reason": cookie_skipped_reason,
                     "start_url": resolved_start_url,
                     "user_data_dir": resolved_user_data_dir,
+                    "duplicate_user_data_dir_requested": duplicate_user_data_dir,
+                    "duplicate_user_data_dir_applied": duplicate_applied,
+                    "duplicate_user_data_dir_source": duplicate_source_user_data_dir,
+                    "ephemeral_user_data_dir": ephemeral_user_data_dir,
+                    "profile_directory": resolved_profile_directory,
+                    "duplicate_copy_paths": duplicate_copy_paths,
                     "browser_args": list(resolved_browser_args),
                     "browser_executable_path": resolved_browser_executable_path,
                     "sandbox": resolved_sandbox,
@@ -1075,6 +1171,7 @@ class BrowserSessionManager:
                 "reason": "not_found",
             }
         await session.browser.close()
+        self._cleanup_ephemeral_user_data_dir(session)
         return {
             "session_id": session_id,
             "stopped": True,
@@ -1088,6 +1185,7 @@ class BrowserSessionManager:
         stopped_ids: list[str] = []
         for session in sessions:
             await session.browser.close()
+            self._cleanup_ephemeral_user_data_dir(session)
             stopped_ids.append(session.session_id)
         return {
             "stopped_count": len(stopped_ids),

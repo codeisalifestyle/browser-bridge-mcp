@@ -26,3 +26,4 @@ screenshots/
 .vscode/
 .cursor/
 *.log
+/results

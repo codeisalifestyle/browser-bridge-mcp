@@ -41,12 +41,30 @@ as the source of truth for active automation state.
 
 - Prefer attaching to intended existing sessions/profiles when continuity matters
   (authenticated workflows, user-context tasks).
+- When user asks for cookies/session state from their "main" browser profile and that
+  profile is actively in use, prefer launching a duplicated profile copy for the task
+  instead of touching the live profile directly.
 - Prefer clean/new sessions for deterministic automation validation.
 - Keep one active session per task unless parallelism is explicitly required.
 - Persist or export cookies/storage only when the task requests it.
 - Avoid cross-task state leakage: stop sessions created for the task when done.
 - When auth-sensitive behavior differs, inspect cookies/storage/profile context
   before changing selectors or waits.
+
+### Auth and Cookie Transfer Guardrails
+
+- For Chromium-family cross-browser transfer (for example Brave -> Chrome), prefer:
+  1) export cookies from a live authenticated session via MCP cookie APIs,
+  2) import into target browser via MCP cookie set APIs,
+  3) verify login state on target.
+- Do not assume raw cookie SQLite files are portable across browsers/profiles
+  because encryption and keychain bindings can differ.
+- If cookie export fails or aborts:
+  - retry with domain-scoped export first (for example `x.com` only),
+  - use document-cookie fallback only as a last resort and report that it excludes
+    HttpOnly auth cookies,
+  - require an explicit auth checkpoint in target browser when HttpOnly cookies are
+    unavailable.
 
 ## Core Principles
 
@@ -127,9 +145,10 @@ new automation script.
 Process:
 1. Confirm objective and output format/location.
 2. Run preflight checks.
-3. Execute via MCP actions with stepwise verification.
-4. Produce requested artifacts and confirm completion.
-5. Stop any sessions created for the task.
+3. For live-user profiles, launch non-disruptively (attach or duplicate profile copy).
+4. Execute via MCP actions with stepwise verification.
+5. Produce requested artifacts and confirm completion.
+6. Stop any sessions created for the task.
 
 Examples:
 - Open main browser session and save cookies for X.com, Instagram, and LinkedIn

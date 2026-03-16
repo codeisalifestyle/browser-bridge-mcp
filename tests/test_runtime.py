@@ -290,5 +290,28 @@ class SessionTraceRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(replay["failed"], 0)
 
 
+class ProfileCloneRuntimeTest(unittest.TestCase):
+    def test_prepare_ephemeral_user_data_dir_copies_profile_directory(self) -> None:
+        manager = BrowserSessionManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_root = Path(tmpdir) / "Brave-Browser"
+            source_profile = source_root / "Default"
+            source_profile.mkdir(parents=True, exist_ok=True)
+            (source_root / "Local State").write_text('{"test": true}', encoding="utf-8")
+            (source_profile / "Cookies").write_text("cookie-db", encoding="utf-8")
+            (source_profile / "Preferences").write_text("prefs", encoding="utf-8")
+
+            clone = manager._prepare_ephemeral_user_data_dir(
+                source_user_data_dir=str(source_root),
+                profile_directory="Default",
+            )
+            target_root = Path(clone["ephemeral_user_data_dir"])
+            self.assertTrue((target_root / "Local State").exists())
+            self.assertTrue((target_root / "Default" / "Cookies").exists())
+            self.assertTrue((target_root / "Default" / "Preferences").exists())
+            self.assertEqual(clone["source_user_data_dir"], str(source_root.resolve()))
+            self.assertEqual(clone["profile_directory"], "Default")
+
+
 if __name__ == "__main__":
     unittest.main()

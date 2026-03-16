@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .browser import BridgeBrowser
 
@@ -717,11 +718,50 @@ async def network_capture_status(browser: BridgeBrowser) -> dict[str, Any]:
     return await browser.network_capture_status()
 
 
-async def get_cookies(browser: BridgeBrowser) -> dict[str, Any]:
-    cookies = await browser.get_cookies()
+def _cookie_domain_matches_filter(cookie_domain: str, expected_domain: str) -> bool:
+    normalized_cookie = cookie_domain.strip().lower().lstrip(".")
+    normalized_expected = expected_domain.strip().lower().lstrip(".")
+    return normalized_cookie == normalized_expected or normalized_cookie.endswith(
+        f".{normalized_expected}"
+    )
+
+
+def _filter_cookie_rows(
+    cookies: list[dict[str, Any]],
+    *,
+    domain: str | None,
+) -> list[dict[str, Any]]:
+    if not domain:
+        return cookies
+    normalized = str(domain).strip()
+    if not normalized:
+        return cookies
+    host = urlparse(normalized).hostname or normalized
+    host = str(host).strip().lower().lstrip(".")
+    if not host:
+        return cookies
+    return [
+        row
+        for row in cookies
+        if isinstance(row, dict)
+        and isinstance(row.get("domain"), str)
+        and _cookie_domain_matches_filter(str(row.get("domain")), host)
+    ]
+
+
+async def get_cookies(
+    browser: BridgeBrowser,
+    *,
+    domain: str | None = None,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    cookies = await browser.get_cookies(timeout_seconds=max(1.0, float(timeout_seconds)))
+    filtered = _filter_cookie_rows(cookies, domain=domain)
     return {
-        "count": len(cookies),
-        "cookies": cookies,
+        "count": len(filtered),
+        "cookies": filtered,
+        "domain": domain,
+        "timeout_seconds": max(1.0, float(timeout_seconds)),
     }
 
 
@@ -752,17 +792,58 @@ async def save_cookies(
     *,
     output_path: str,
     wrap_object: bool = True,
+    domain: str | None = None,
+    timeout_seconds: float = 10.0,
+    allow_document_cookie_fallback: bool = True,
 ) -> dict[str, Any]:
-    cookies = await browser.get_cookies()
+    fallback_used = False
+    fallback_reason: str | None = None
+    try:
+        cookies = await browser.get_cookies(timeout_seconds=max(1.0, float(timeout_seconds)))
+    except Exception as exc:
+        if not allow_document_cookie_fallback:
+            raise
+        fallback_used = True
+        fallback_reason = str(exc)
+        doc_cookie = await browser.evaluate("document.cookie")
+        cookie_text = str(doc_cookie or "")
+        host = str(urlparse(str(browser.tab.url)).hostname or "")
+        cookies = []
+        for token in cookie_text.split(";"):
+            if "=" not in token:
+                continue
+            name, value = token.split("=", 1)
+            name = name.strip()
+            value = value.strip()
+            if not name:
+                continue
+            cookies.append(
+                {
+                    "name": name,
+                    "value": value,
+                    "domain": host,
+                    "path": "/",
+                    "secure": True,
+                    "httpOnly": False,
+                }
+            )
+
+    cookies = _filter_cookie_rows(cookies, domain=domain)
     path = Path(output_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: Any = {"cookies": cookies} if wrap_object else cookies
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-    return {
+    result: dict[str, Any] = {
         "path": str(path),
         "saved_count": len(cookies),
         "wrap_object": bool(wrap_object),
+        "domain": domain,
+        "timeout_seconds": max(1.0, float(timeout_seconds)),
+        "fallback_used": fallback_used,
     }
+    if fallback_reason:
+        result["fallback_reason"] = fallback_reason
+    return result
 
 
 async def clear_cookies(

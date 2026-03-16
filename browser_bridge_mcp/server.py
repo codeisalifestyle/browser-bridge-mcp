@@ -105,6 +105,8 @@ def create_server(
         profile: str | None = None,
         cookie_name: str | None = None,
         launch_config: str | None = None,
+        duplicate_user_data_dir: bool | None = None,
+        profile_directory: str | None = None,
     ) -> dict[str, Any]:
         return await manager.start_session(
             session_id=session_id,
@@ -119,6 +121,8 @@ def create_server(
             profile=profile,
             cookie_name=cookie_name,
             launch_config=launch_config,
+            duplicate_user_data_dir=duplicate_user_data_dir,
+            profile_directory=profile_directory,
         )
 
     @mcp.tool(
@@ -930,12 +934,21 @@ def create_server(
     @mcp.tool(name="browser_cookies_get", description="Get all cookies visible to current browser context.")
     async def browser_cookies_get(
         session_id: str,
+        domain: str | None = None,
+        timeout_seconds: float = 10.0,
     ) -> dict[str, Any]:
         return await manager.run_action(
             session_id=session_id,
             action_name="browser_cookies_get",
-            operation=get_cookies,
-            action_args={},
+            operation=lambda browser: get_cookies(
+                browser,
+                domain=domain,
+                timeout_seconds=timeout_seconds,
+            ),
+            action_args={
+                "domain": domain,
+                "timeout_seconds": timeout_seconds,
+            },
         )
 
     @mcp.tool(name="browser_cookies_set", description="Set cookies into current browser context.")
@@ -963,6 +976,9 @@ def create_server(
         session_id: str,
         output_path: str,
         wrap_object: bool = True,
+        domain: str | None = None,
+        timeout_seconds: float = 10.0,
+        allow_document_cookie_fallback: bool = True,
     ) -> dict[str, Any]:
         return await manager.run_action(
             session_id=session_id,
@@ -971,10 +987,16 @@ def create_server(
                 browser,
                 output_path=output_path,
                 wrap_object=wrap_object,
+                domain=domain,
+                timeout_seconds=timeout_seconds,
+                allow_document_cookie_fallback=allow_document_cookie_fallback,
             ),
             action_args={
                 "output_path": output_path,
                 "wrap_object": wrap_object,
+                "domain": domain,
+                "timeout_seconds": timeout_seconds,
+                "allow_document_cookie_fallback": allow_document_cookie_fallback,
             },
         )
 
