@@ -1,29 +1,47 @@
 # browser-bridge-mcp
 
-MCP server that gives AI clients full access to a live browser environment.
+🚀 MCP server that gives AI clients full access to a live Chromium browser environment.
 
-Your AI client can either start a new browser session or attach to an existing one. This makes it useful for autonomous web automation, regression checks, and browser-based workflows. Under the hood, it uses `nodriver` as the automation runtime.
+Your AI client can intelligently create a new browser session or attach to an existing system Chromium instance. It is built for autonomous automation, developer workflows, and production-style browser operations, powered by `nodriver-reforged`.
 
-## What this server provides
+## 🌟 Product Highlights
 
-- **MCP (Model Context Protocol)** is a standard for giving AI clients access to tools.
-- **This repo is an MCP server** that exposes browser automation tools.
-- **Your AI client runs it as a command** (usually over `stdio` transport).
+`browser-bridge-mcp` turns browser automation into a reliable MCP service your agents can trust in real workflows, not just demos.
 
-## Why integrate this into your AI client
+### 🧠 Intelligent Chromium orchestration
 
-- **Launch or attach sessions**: start with `session_start` (now profile/config aware) or connect with `session_attach`.
-- **Full browser control**: navigate, click, type, scroll, evaluate scripts, inspect DOM/HTML, and take screenshots.
-- **Built for autonomous workflows**: useful for end-to-end automation building, regression checks, and web task execution loops.
-- **Better observability for agents**: capture console logs and network request metadata while the agent acts.
-- **Session-aware automation**: isolated session lifecycle (`start`, `list`, `get`, `stop`) and per-session action locking.
+- Launch fresh sessions instantly with `session_start`, or attach to existing system Chromium instances with `session_attach`.
+- Connect the way your environment requires: host/port, websocket URL, or saved state file.
+- Run with confidence using robust session lifecycle controls (`start`, `list`, `get`, `stop`, `stop_all`) and per-session action locking.
+- Keep long-running workflows alive by reconnecting and continuing work instead of restarting from zero.
+
+### 🤖 Built for autonomous agents and fast-moving teams
+
+- Give agents deterministic control over navigate/query/click/type/wait/evaluate/screenshot flows.
+- Ship faster with first-class support for E2E prototyping, scraping pipelines, regression checks, and interactive debugging.
+- Get live operational visibility with console output, request metadata, and CDP-level network capture.
+- Reduce flaky runs and shorten feedback loops across development and QA.
+
+### 👤 Durable browser identity and session state
+
+- Centralize reusable browser state under one roof: `profiles/`, `cookies/`, and `configs/`.
+- Start sessions with profile-aware defaults, account aliases, and cookie jars built in.
+- Fine-tune launch behavior with configurable browser flags, executable paths, headless/sandbox settings, and proxy-ready arguments.
+- Preserve realistic, persistent browser identity across sessions for multi-account and high-continuity automation.
+
+### 🕵️ Stealth foundation with nodriver-reforged + CDP
+
+- Powered by `nodriver-reforged`: a maintained no-WebDriver/no-Selenium Chromium automation runtime.
+- Includes anti-bot oriented capabilities, including Cloudflare Turnstile solving through `browser_solve_cloudflare`.
+- Built on direct CDP control for low-level precision, observability, and flexibility.
+- Better suited for modern websites where reliability under anti-automation pressure matters.
 
 ## Quick Start (recommended)
 
 ### 1) Install prerequisites
 
-- Python `>=3.10,<3.14` (Python `3.14` is currently not supported due to an upstream `nodriver` issue)
-- A Chromium-based browser installed (Chrome or Edge)
+- Python `>=3.10` (Python `3.14+` is supported with the latest `nodriver-reforged`)
+- A Chromium-based browser installed (Chrome, Brave or Edge)
 - Optional but recommended: `pipx` (for easy isolated CLI installs)
 
 Install `pipx` (optional, recommended) on macOS:
@@ -247,8 +265,8 @@ Client config for this mode:
 - **"command not found: browser-bridge-mcp"**
   - Run `pipx ensurepath`, restart terminal and AI client, then retry.
   - Use absolute command path from `which browser-bridge-mcp`.
-- **Python 3.14 errors**
-  - Use Python 3.13 or lower.
+- **Python version mismatch**
+  - Use a supported Python (`>=3.10`) and reinstall/upgrade the package in your MCP environment.
 - **Browser fails to launch in restricted environments**
   - Try `session_start` with `sandbox=false`.
 - **MCP client does not show tools**
@@ -261,3 +279,4 @@ Client config for this mode:
 - Use this only on sites and accounts where you are authorized.
 - Respect website Terms of Service and local regulations.
 - Be cautious with high-frequency automation.
+

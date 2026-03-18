@@ -1,3 +1,3 @@
 mcp>=1.26.0
-nodriver @ git+https://github.com/codeisalifestyle/nodriver-reforged.git
+nodriver @ git+https://github.com/codeisalifestyle/nodriver-reforged.git@main
 opencv-python>=4.8
