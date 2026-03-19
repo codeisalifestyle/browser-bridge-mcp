@@ -6,9 +6,7 @@ Your AI client can intelligently create a new browser session or attach to an ex
 
 ## Demo Video
 
-
-
-If the embedded player does not render in your client, open the file directly: [demo/browser-bridge-mcp-demo1.mp4](demo/browser-bridge-mcp-demo1.mp4)
+Watch/download the demo here: [demo/browser-bridge-mcp-demo1.mp4](demo/browser-bridge-mcp-demo1.mp4)
 
 ## 🌟 Product Highlights
 
