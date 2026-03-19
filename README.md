@@ -4,6 +4,12 @@
 
 Your AI client can intelligently create a new browser session or attach to an existing system Chromium instance. It is built for autonomous automation, developer workflows, and production-style browser operations, powered by `nodriver-reforged`.
 
+## Demo Video
+
+
+
+If the embedded player does not render in your client, open the file directly: [demo/browser-bridge-mcp-demo1.mp4](demo/browser-bridge-mcp-demo1.mp4)
+
 ## 🌟 Product Highlights
 
 `browser-bridge-mcp` turns browser automation into a reliable MCP service your agents can trust in real workflows, not just demos.
