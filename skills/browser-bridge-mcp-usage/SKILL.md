@@ -27,12 +27,57 @@ verify result, then codify.
 
 Run a quick preflight before browser actions:
 
-1. Confirm MCP server availability and required tools are discoverable.
-2. Confirm a browser session can be listed, started/attached, and stopped.
-3. Confirm write targets exist for outputs (for example `/results`) when needed.
-4. Confirm cookie/profile paths used by the task are accessible.
+1. Call `session_preflight` (optionally pass `host`/`port` to probe an existing
+   debugger and `user_data_dir` to validate a profile path). Inspect:
+   - `nodriver.available` is true,
+   - the `candidate_browsers` list contains at least one `exists: true` row,
+   - any DevTools probe under `checks` returned `reachable: true`,
+   - `looks_locked` is false for the user_data_dir you intend to launch with.
+2. Call `session_launch_modes` to read the official catalog of launch recipes
+   and pick the correct one (see "Launch Modes Decision Matrix" below).
+3. Confirm a browser session can be listed, started/attached, and stopped.
+4. Confirm write targets exist for outputs (for example `/results`) when needed.
+5. Confirm cookie/profile paths used by the task are accessible.
 
 If any preflight check fails, report the blocker and stop before partial execution.
+
+## Launch Modes Decision Matrix
+
+Always pick exactly ONE mode before calling `session_start` or `session_attach`.
+The MCP also exposes this matrix at runtime via `session_launch_modes`.
+
+| Goal | Mode id | Tool | Key args | Why |
+| --- | --- | --- | --- | --- |
+| Fresh isolated browser, no identity | `ephemeral_fresh` | `session_start` | (none) | Safe default; never disrupts user. |
+| Background scrape, no UI | `headless_scrape` | `session_start` | `headless=true` | Server / CI use. |
+| Reusable identity that persists | `managed_profile` | `session_start` | `profile=<name>` | Centralized in state root; durable. |
+| Use user's REAL cookies once, without disrupting them | `live_profile_clone` | `session_start` | `user_data_dir=<live profile>` (auto-cloned) | Original Chrome/Brave keeps running. |
+| User already has a debug-port browser open, do NOT touch their tabs | `attach_existing_with_new_tab` | `session_attach` | `host`+`port`, default `new_tab=true` | Opens a fresh tab to work in. |
+| Take over the user's foreground tab | `attach_existing_take_over` | `session_attach` | `host`+`port`, `new_tab=false` | Advanced; navigation is destructive. |
+
+### Hard rules
+
+- **Never** pass both `user_data_dir` and `profile=<name>` together. Pick one identity source.
+- **Never** call `session_attach` with `new_tab=false` unless the user explicitly asked you to manipulate the existing foreground tab.
+- **Never** launch a managed profile twice in parallel. Chromium will refuse to lock the same `user_data_dir` and you will get a half-broken second window.
+- When attaching, the target browser MUST have been launched with `--remote-debugging-port=<port>`. If the user did not do this, do not attempt `session_attach`; fall back to `live_profile_clone` instead.
+
+### Cookie transfer that actually works
+
+The reliable recipe for moving auth from one browser to another:
+
+1. Launch the source as `live_profile_clone` (or attach to it) and `browser_navigate` to the target site so cookies are populated.
+2. `browser_cookies_save` -> save to a file in the cookie jar.
+3. `session_stop` the source.
+4. `session_start` the destination with `cookie_file=<saved path>` and a `start_url` pointing at the same domain. This applies cookies BEFORE navigation, which is what avoids the "logged-out then logged-in flash" race condition.
+5. Verify auth on the destination via `browser_url` + a snapshot for an authenticated UI marker.
+
+If cookie save returns `allow_document_cookie_fallback=true` and HttpOnly cookies are missing, that browser will not be authenticated for HttpOnly-gated APIs. Surface this explicitly and ask the user for an interactive auth checkpoint.
+
+### Avoiding lingering processes
+
+- Always pair every `session_start`/`session_attach` with `session_stop` (or `session_stop_all` at end of task).
+- If `session_stop` returns a `close_error`, run `session_list` to confirm the session is gone and use the OS to verify no child Chromium PID remains. The runtime will best-effort wait for `browser.stopped()` but cannot kill a wedged process.
 
 ## Profile and Browser Config Management
 

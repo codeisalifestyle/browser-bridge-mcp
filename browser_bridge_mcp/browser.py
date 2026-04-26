@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 
@@ -24,6 +25,7 @@ class BridgeBrowser:
         browser_args: list[str] | None = None,
         browser_executable_path: str | None = None,
         sandbox: bool = True,
+        attach_open_new_tab: bool = True,
     ):
         self.headless = headless
         self.connect_host = connect_host
@@ -32,8 +34,12 @@ class BridgeBrowser:
         self.browser_args = list(browser_args or [])
         self.browser_executable_path = browser_executable_path
         self.sandbox = sandbox
+        self.attach_open_new_tab = attach_open_new_tab
         self.browser: Any = None
         self.tab: Any = None
+        self.attach_created_new_tab: bool = False
+        self.attach_main_tab_id: str | None = None
+        self.attach_active_tab_id: str | None = None
         self._cdp_network: Any = None
         self._cdp_storage: Any = None
         self._cdp_input: Any = None
@@ -99,7 +105,8 @@ class BridgeBrowser:
                 self.browser = await uc.start(host=self.connect_host, port=self.connect_port)
             except Exception as exc:
                 raise RuntimeError(
-                    f"Failed to connect to browser at {self.connect_host}:{self.connect_port}."
+                    f"Failed to connect to browser at {self.connect_host}:{self.connect_port}. "
+                    "Confirm the target browser was launched with --remote-debugging-port and is reachable."
                 ) from exc
         else:
             config_kwargs: dict[str, Any] = {
@@ -134,7 +141,29 @@ class BridgeBrowser:
                         "Failed to start browser. Ensure the latest nodriver-reforged "
                         "dependency is installed in this MCP environment."
                     ) from retry_exc
-        self.tab = self.browser.main_tab
+
+        main_tab = getattr(self.browser, "main_tab", None)
+        self.attach_main_tab_id = self._tab_id(main_tab) if main_tab is not None else None
+
+        if attach_mode and self.attach_open_new_tab:
+            try:
+                created = await self.browser.get(url="about:blank", new_tab=True)
+                try:
+                    await created.activate()
+                except Exception:
+                    pass
+                self.tab = created
+                self.attach_created_new_tab = True
+            except Exception as exc:
+                logger.warning(
+                    "Could not open a fresh tab on attach (%s). Falling back to main_tab.",
+                    exc,
+                )
+                self.tab = main_tab
+        else:
+            self.tab = main_tab
+
+        self.attach_active_tab_id = self._tab_id(self.tab) if self.tab is not None else None
         await asyncio.sleep(1.2)
 
         if self._owns_process:
@@ -146,12 +175,38 @@ class BridgeBrowser:
         if self.browser is None:
             return
         try:
+            if (
+                not self._owns_process
+                and self.attach_created_new_tab
+                and self.tab is not None
+            ):
+                try:
+                    await self.tab.close()
+                except Exception as exc:
+                    logger.debug("Could not close attach-created tab cleanly: %s", exc)
             if self._owns_process:
-                self.browser.stop()
+                try:
+                    self.browser.stop()
+                except Exception as exc:
+                    logger.warning("Browser.stop() raised: %s", exc)
+                stopped_marker = getattr(self.browser, "stopped", None)
+                if callable(stopped_marker):
+                    for _ in range(20):
+                        try:
+                            if bool(stopped_marker()):
+                                break
+                        except Exception:
+                            break
+                        await asyncio.sleep(0.1)
+                else:
+                    await asyncio.sleep(0.5)
         finally:
             self.browser = None
             self.tab = None
             self._owns_process = False
+            self.attach_created_new_tab = False
+            self.attach_main_tab_id = None
+            self.attach_active_tab_id = None
             self._dialog_config = None
             self._dialog_events = []
             self._dialog_handler_tab = None
@@ -892,11 +947,13 @@ class BridgeBrowser:
         cookies: list[dict[str, Any]],
         *,
         fallback_domain: str | None = None,
+        navigate_blank_first: bool = False,
     ) -> None:
         if not self.tab:
             raise RuntimeError("Browser not started")
 
-        await self.goto("about:blank", wait_seconds=0.5)
+        if navigate_blank_first:
+            await self.goto("about:blank", wait_seconds=0.5)
         for cookie in cookies:
             name = cookie.get("name")
             value = cookie.get("value", "")

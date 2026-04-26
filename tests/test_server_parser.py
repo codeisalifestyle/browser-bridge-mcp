@@ -1,6 +1,8 @@
+import asyncio
+import tempfile
 import unittest
 
-from browser_bridge_mcp.server import build_parser
+from browser_bridge_mcp.server import build_parser, create_server
 
 
 class ServerParserTest(unittest.TestCase):
@@ -35,6 +37,26 @@ class ServerParserTest(unittest.TestCase):
         self.assertEqual(args.port, 8877)
         self.assertEqual(args.log_level, "DEBUG")
         self.assertEqual(args.state_root, "/tmp/browser-state")
+
+
+class ServerToolsRegistrationTest(unittest.TestCase):
+    def test_server_registers_launch_modes_and_preflight_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server = create_server(state_root=tmpdir)
+            tools = asyncio.run(server.list_tools())
+            tool_names = {tool.name for tool in tools}
+            self.assertIn("session_launch_modes", tool_names)
+            self.assertIn("session_preflight", tool_names)
+            self.assertIn("session_attach", tool_names)
+            self.assertIn("session_start", tool_names)
+
+    def test_session_attach_tool_advertises_new_tab_arg(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server = create_server(state_root=tmpdir)
+            tools = asyncio.run(server.list_tools())
+            attach_tool = next(t for t in tools if t.name == "session_attach")
+            schema_props = attach_tool.inputSchema.get("properties", {})
+            self.assertIn("new_tab", schema_props)
 
 
 if __name__ == "__main__":

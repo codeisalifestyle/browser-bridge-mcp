@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import shutil
+import sys
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -26,6 +28,214 @@ from .state_store import (
     normalize_launch_options,
     validate_name,
 )
+
+
+LAUNCH_MODES: list[dict[str, Any]] = [
+    {
+        "id": "ephemeral_fresh",
+        "tool": "session_start",
+        "summary": "Brand-new isolated Chromium window with no profile state.",
+        "when_to_use": (
+            "Default for deterministic automation, scraping, e2e tests, and any "
+            "task that does NOT need a logged-in account. Safe even when your "
+            "real Chrome/Brave is open."
+        ),
+        "required_args": [],
+        "optional_args": ["headless", "start_url", "browser_args", "sandbox"],
+        "example": {
+            "tool": "session_start",
+            "args": {"headless": False, "start_url": "https://example.com"},
+        },
+        "warnings": [],
+    },
+    {
+        "id": "headless_scrape",
+        "tool": "session_start",
+        "summary": "Ephemeral Chromium in headless mode for background scraping.",
+        "when_to_use": "Server-side scraping, CI/CD, anything without a visible window.",
+        "required_args": ["headless=true"],
+        "optional_args": ["start_url", "browser_args", "sandbox"],
+        "example": {
+            "tool": "session_start",
+            "args": {"headless": True, "start_url": "https://example.com"},
+        },
+        "warnings": [
+            "Headless detection is mitigated via stealth UA override but some sites still gate on it.",
+        ],
+    },
+    {
+        "id": "managed_profile",
+        "tool": "session_start",
+        "summary": (
+            "Reusable persistent profile stored under the centralized state root "
+            "(profiles/<name>). Cookies/local-storage survive across runs."
+        ),
+        "when_to_use": (
+            "Multi-account automation that needs durable identity without touching the user's real browser."
+        ),
+        "required_args": ["profile=<name>"],
+        "optional_args": ["headless", "start_url", "cookie_name", "launch_config"],
+        "example": {
+            "tool": "session_start",
+            "args": {"profile": "twitter_main", "start_url": "https://x.com/home"},
+        },
+        "warnings": [
+            "Run only one session per managed profile at a time. The profile dir cannot be locked twice.",
+        ],
+    },
+    {
+        "id": "live_profile_clone",
+        "tool": "session_start",
+        "summary": (
+            "Clone the user's real browser profile (Chrome/Brave) into an ephemeral copy "
+            "before launching, so the live browser is never disrupted."
+        ),
+        "when_to_use": (
+            "One-off task that needs the user's real logged-in cookies but you do not "
+            "want to close their actual browser. Default safety auto-clones any "
+            "user_data_dir that is outside the centralized state root."
+        ),
+        "required_args": ["user_data_dir=<live profile dir>"],
+        "optional_args": [
+            "duplicate_user_data_dir (defaults to true for external paths)",
+            "profile_directory (defaults to 'Default')",
+            "browser_executable_path",
+        ],
+        "example": {
+            "tool": "session_start",
+            "args": {
+                "user_data_dir": "~/Library/Application Support/BraveSoftware/Brave-Browser",
+                "profile_directory": "Default",
+                "browser_executable_path": "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            },
+        },
+        "warnings": [
+            "Cloning copies cookies/Local State; HTTP-only cookies bound to OS keychain may not decrypt.",
+            "Verify auth state before relying on the cloned session.",
+        ],
+    },
+    {
+        "id": "attach_existing_with_new_tab",
+        "tool": "session_attach",
+        "summary": (
+            "Attach to an already-running browser via DevTools host/port and open a "
+            "fresh tab for agent work. Original tabs are NOT touched."
+        ),
+        "when_to_use": (
+            "Continue work in the user's running browser without hijacking their tabs. "
+            "Requires the target browser to be launched with --remote-debugging-port."
+        ),
+        "required_args": ["host AND port  OR  ws_url  OR  state_file"],
+        "optional_args": ["start_url", "new_tab (defaults to true)"],
+        "example": {
+            "tool": "session_attach",
+            "args": {"host": "127.0.0.1", "port": 9222, "start_url": "https://example.com"},
+        },
+        "warnings": [
+            "Setting new_tab=false will route navigations through the user's main tab and CAN hijack it.",
+        ],
+    },
+    {
+        "id": "attach_existing_take_over",
+        "tool": "session_attach",
+        "summary": "Attach and drive the existing main tab directly (advanced).",
+        "when_to_use": (
+            "You explicitly want to inspect or manipulate whatever is currently in the user's foreground tab."
+        ),
+        "required_args": ["host AND port  OR  ws_url  OR  state_file", "new_tab=false"],
+        "optional_args": ["start_url"],
+        "example": {
+            "tool": "session_attach",
+            "args": {"host": "127.0.0.1", "port": 9222, "new_tab": False},
+        },
+        "warnings": [
+            "The agent will operate on whatever tab Chrome considers main_tab; navigation is destructive.",
+        ],
+    },
+]
+
+
+def _candidate_browser_binaries() -> list[dict[str, Any]]:
+    """Return common Chromium-family binary paths per OS, with existence flags."""
+    candidates: list[dict[str, Any]] = []
+
+    def add(label: str, path: str) -> None:
+        expanded = Path(path).expanduser()
+        candidates.append(
+            {
+                "label": label,
+                "path": str(expanded),
+                "exists": expanded.exists(),
+            }
+        )
+
+    if sys.platform == "darwin":
+        add("Google Chrome", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        add("Brave Browser", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser")
+        add("Microsoft Edge", "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+        add("Chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium")
+    elif sys.platform.startswith("linux"):
+        add("Google Chrome", "/usr/bin/google-chrome")
+        add("Google Chrome (stable)", "/usr/bin/google-chrome-stable")
+        add("Chromium", "/usr/bin/chromium")
+        add("Chromium Browser", "/usr/bin/chromium-browser")
+        add("Brave Browser", "/usr/bin/brave-browser")
+    elif sys.platform.startswith("win"):
+        add(
+            "Google Chrome",
+            r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        )
+        add(
+            "Google Chrome (x86)",
+            r"C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        )
+        add(
+            "Brave Browser",
+            r"C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+        )
+        add(
+            "Microsoft Edge",
+            r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        )
+    return candidates
+
+
+def _detect_nodriver_status() -> dict[str, Any]:
+    try:
+        import nodriver  # noqa: F401
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": str(exc)}
+    return {"available": True}
+
+
+async def _probe_devtools_endpoint(host: str, port: int, *, timeout: float = 2.0) -> dict[str, Any]:
+    """Quickly check whether a Chrome DevTools endpoint is reachable.
+
+    Uses the standard ``/json/version`` endpoint exposed by Chromium when launched
+    with ``--remote-debugging-port``.  Returns a dict with reachable status and the
+    endpoint metadata when available.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = f"http://{host}:{port}/json/version"
+
+    def _do_request() -> dict[str, Any]:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - localhost probe
+                payload = json.loads(response.read().decode("utf-8"))
+            return {
+                "reachable": True,
+                "browser": payload.get("Browser"),
+                "user_agent": payload.get("User-Agent"),
+                "webSocketDebuggerUrl": payload.get("webSocketDebuggerUrl"),
+            }
+        except urllib.error.URLError as exc:
+            return {"reachable": False, "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001
+            return {"reachable": False, "error": str(exc)}
+
+    return await asyncio.to_thread(_do_request)
 
 
 READ_ONLY_BLOCKED_ACTIONS = {
@@ -251,6 +461,98 @@ class BrowserSessionManager:
 
     async def get_state_paths(self) -> dict[str, Any]:
         return self._state_store.paths_summary()
+
+    async def launch_modes(self) -> dict[str, Any]:
+        """Return a structured catalog of supported browser launch recipes.
+
+        This is meant to be the *first* thing an AI client calls before deciding
+        whether to use ``session_start`` vs ``session_attach`` and which arguments
+        to pass.  It exists because the surface is wide enough that callers
+        otherwise spam multiple flags and end up with overlapping windows or
+        hijacked tabs.
+        """
+        return {
+            "count": len(LAUNCH_MODES),
+            "modes": LAUNCH_MODES,
+            "decision_guide": [
+                "Need a fresh isolated browser? -> ephemeral_fresh.",
+                "Need it server-side / no UI? -> headless_scrape.",
+                "Need a logged-in identity that persists? -> managed_profile.",
+                "Need the user's REAL cookies one time, without disrupting them? -> live_profile_clone.",
+                "User's browser is already running w/ remote-debugging-port? -> attach_existing_with_new_tab.",
+                "User explicitly wants you to take over the foreground tab? -> attach_existing_take_over.",
+            ],
+        }
+
+    async def preflight(
+        self,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        browser_executable_path: str | None = None,
+        user_data_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """Run quick environment checks for browser launching.
+
+        Returns information about:
+          * The state-root configuration.
+          * Detected Chromium-family binaries on this machine.
+          * Whether the underlying ``nodriver`` runtime imports cleanly.
+          * Optional liveness probe of an existing remote-debugging endpoint.
+          * Optional sanity check for a user-data-dir (exists / lock-file present).
+        """
+        result: dict[str, Any] = {
+            "platform": sys.platform,
+            "python": sys.version.split()[0],
+            "state_paths": self._state_store.paths_summary(),
+            "nodriver": _detect_nodriver_status(),
+            "candidate_browsers": _candidate_browser_binaries(),
+            "checks": [],
+        }
+
+        if browser_executable_path:
+            exe = Path(browser_executable_path).expanduser()
+            result["checks"].append(
+                {
+                    "name": "browser_executable_path",
+                    "path": str(exe),
+                    "exists": exe.exists(),
+                    "executable": exe.is_file() and os.access(exe, os.X_OK),
+                }
+            )
+
+        if user_data_dir:
+            udd = Path(user_data_dir).expanduser()
+            lock_file = udd / "SingletonLock"
+            result["checks"].append(
+                {
+                    "name": "user_data_dir",
+                    "path": str(udd),
+                    "exists": udd.exists(),
+                    "is_dir": udd.is_dir(),
+                    "looks_locked": lock_file.exists(),
+                    "hint": (
+                        "If looks_locked is true another browser is using this profile. "
+                        "Use duplicate_user_data_dir=true to clone it instead of attaching."
+                    ),
+                }
+            )
+
+        if host and port:
+            probe = await _probe_devtools_endpoint(host, port)
+            result["checks"].append(
+                {
+                    "name": "devtools_endpoint",
+                    "host": host,
+                    "port": port,
+                    **probe,
+                }
+            )
+
+        # Surface a synthesized "ready" verdict so callers don't have to inspect every key.
+        ready = result["nodriver"].get("available", False)
+        result["ready"] = ready
+        return result
 
     async def list_profiles(self) -> dict[str, Any]:
         profiles = self._state_store.list_profiles()
@@ -1041,8 +1343,16 @@ class BrowserSessionManager:
             duplicate_copy_paths = list(clone_info["copied_paths"])
             resolved_user_data_dir = ephemeral_user_data_dir
 
-        if resolved_profile_directory and not any(
-            arg.startswith("--profile-directory=") for arg in resolved_browser_args
+        # Only push --profile-directory when an explicit user_data_dir is in play.
+        # Without a backing data dir, the flag has no useful effect and can confuse
+        # Chromium when launched alongside an active system browser.
+        if (
+            isinstance(resolved_user_data_dir, str)
+            and resolved_user_data_dir.strip()
+            and resolved_profile_directory
+            and not any(
+                arg.startswith("--profile-directory=") for arg in resolved_browser_args
+            )
         ):
             resolved_browser_args.append(f"--profile-directory={resolved_profile_directory}")
 
@@ -1065,7 +1375,11 @@ class BrowserSessionManager:
                 else:
                     cookies = load_cookie_file(str(cookie_path))
                     cookie_applied_count = len(cookies)
-                    await browser.set_cookies(cookies, fallback_domain=resolved_cookie_fallback_domain)
+                    await browser.set_cookies(
+                        cookies,
+                        fallback_domain=resolved_cookie_fallback_domain,
+                        navigate_blank_first=True,
+                    )
 
             if resolved_start_url:
                 await browser.goto(str(resolved_start_url), wait_seconds=1.2)
@@ -1125,6 +1439,7 @@ class BrowserSessionManager:
         ws_url: str | None,
         state_file: str | None,
         start_url: str | None,
+        new_tab: bool | None = None,
     ) -> dict[str, Any]:
         resolved_session_id = session_id or f"sess_{uuid.uuid4().hex[:12]}"
         attach_host, attach_port = resolve_connection(
@@ -1133,7 +1448,14 @@ class BrowserSessionManager:
             ws_url=ws_url,
             state_file=state_file,
         )
-        browser = BridgeBrowser(connect_host=attach_host, connect_port=attach_port)
+        # Default to creating a fresh tab on attach so we never hijack the
+        # user's main_tab. Callers can opt out with new_tab=False.
+        attach_open_new_tab = True if new_tab is None else bool(new_tab)
+        browser = BridgeBrowser(
+            connect_host=attach_host,
+            connect_port=attach_port,
+            attach_open_new_tab=attach_open_new_tab,
+        )
         await browser.start()
         try:
             if start_url:
@@ -1152,6 +1474,10 @@ class BrowserSessionManager:
                 metadata={
                     "ws_url": ws_url,
                     "state_file": str(Path(state_file).expanduser()) if state_file else None,
+                    "attach_open_new_tab": attach_open_new_tab,
+                    "attach_created_new_tab": browser.attach_created_new_tab,
+                    "attach_main_tab_id": browser.attach_main_tab_id,
+                    "attach_active_tab_id": browser.attach_active_tab_id,
                 },
                 last_known_url=page.get("url"),
                 last_known_title=page.get("title"),
@@ -1170,27 +1496,41 @@ class BrowserSessionManager:
                 "stopped": False,
                 "reason": "not_found",
             }
-        await session.browser.close()
+        close_error: str | None = None
+        try:
+            await session.browser.close()
+        except Exception as exc:  # noqa: BLE001
+            close_error = str(exc)
         self._cleanup_ephemeral_user_data_dir(session)
-        return {
+        result: dict[str, Any] = {
             "session_id": session_id,
             "stopped": True,
             "stopped_at": _utc_now_iso(),
         }
+        if close_error:
+            result["close_error"] = close_error
+        return result
 
     async def stop_all_sessions(self) -> dict[str, Any]:
         async with self._sessions_lock:
             sessions = list(self._sessions.values())
             self._sessions.clear()
         stopped_ids: list[str] = []
+        errors: list[dict[str, str]] = []
         for session in sessions:
-            await session.browser.close()
+            try:
+                await session.browser.close()
+            except Exception as exc:  # noqa: BLE001
+                errors.append({"session_id": session.session_id, "error": str(exc)})
             self._cleanup_ephemeral_user_data_dir(session)
             stopped_ids.append(session.session_id)
-        return {
+        result: dict[str, Any] = {
             "stopped_count": len(stopped_ids),
             "session_ids": stopped_ids,
         }
+        if errors:
+            result["errors"] = errors
+        return result
 
     async def run_action(
         self,

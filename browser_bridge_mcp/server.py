@@ -127,7 +127,11 @@ def create_server(
 
     @mcp.tool(
         name="session_attach",
-        description="Attach to existing browser via host/port, ws_url, or state_file.",
+        description=(
+            "Attach to existing browser via host/port, ws_url, or state_file. "
+            "Defaults to opening a fresh tab so the user's existing tabs are NOT hijacked. "
+            "Pass new_tab=false to drive the existing main tab instead."
+        ),
     )
     async def session_attach(
         session_id: str | None = None,
@@ -136,6 +140,7 @@ def create_server(
         ws_url: str | None = None,
         state_file: str | None = None,
         start_url: str | None = None,
+        new_tab: bool | None = None,
     ) -> dict[str, Any]:
         return await manager.attach_session(
             session_id=session_id,
@@ -144,6 +149,37 @@ def create_server(
             ws_url=ws_url,
             state_file=state_file,
             start_url=start_url,
+            new_tab=new_tab,
+        )
+
+    @mcp.tool(
+        name="session_launch_modes",
+        description=(
+            "Return a structured catalog of supported browser launching/attaching recipes. "
+            "Call this BEFORE session_start or session_attach to pick the correct mode."
+        ),
+    )
+    async def session_launch_modes() -> dict[str, Any]:
+        return await manager.launch_modes()
+
+    @mcp.tool(
+        name="session_preflight",
+        description=(
+            "Run environment checks (state root, detected browsers, nodriver import, optional "
+            "DevTools endpoint probe and user_data_dir validation). Use to debug launch failures."
+        ),
+    )
+    async def session_preflight(
+        host: str | None = None,
+        port: int | None = None,
+        browser_executable_path: str | None = None,
+        user_data_dir: str | None = None,
+    ) -> dict[str, Any]:
+        return await manager.preflight(
+            host=host,
+            port=port,
+            browser_executable_path=browser_executable_path,
+            user_data_dir=user_data_dir,
         )
 
     @mcp.tool(name="session_list", description="List active browser sessions.")

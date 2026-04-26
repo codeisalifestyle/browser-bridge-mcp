@@ -135,6 +135,45 @@ After reloading/restarting your AI client, ask it:
 
 If these succeed, installation is complete.
 
+## Choosing a launch mode
+
+`browser-bridge-mcp` exposes six well-defined launch recipes. Always pick one
+explicitly before calling `session_start` or `session_attach`. The MCP itself
+returns the same catalog at runtime via `session_launch_modes`.
+
+| Mode | Tool | When to use | Example args |
+| --- | --- | --- | --- |
+| `ephemeral_fresh` | `session_start` | Fresh isolated browser, no identity. Default for scraping/E2E. | `{}` |
+| `headless_scrape` | `session_start` | Background scraping in CI / no UI. | `{ "headless": true }` |
+| `managed_profile` | `session_start` | Reusable persistent identity stored in the state root. | `{ "profile": "twitter_main" }` |
+| `live_profile_clone` | `session_start` | Use the user's REAL profile cookies once without disrupting their open browser. Auto-clones any external `user_data_dir`. | `{ "user_data_dir": "~/Library/Application Support/Google/Chrome", "browser_executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }` |
+| `attach_existing_with_new_tab` | `session_attach` | The user's browser is already running with `--remote-debugging-port`; do NOT touch their tabs. | `{ "host": "127.0.0.1", "port": 9222 }` |
+| `attach_existing_take_over` | `session_attach` | You explicitly want to drive the user's foreground tab. | `{ "host": "127.0.0.1", "port": 9222, "new_tab": false }` |
+
+Common gotchas avoided by these recipes:
+
+- Multiple windows opening when launching with `--profile-directory` but no `user_data_dir` — fixed: the flag is now only appended when an explicit `user_data_dir` is in play.
+- The MCP "hijacking" the user's foreground tab on attach — fixed: `session_attach` defaults to opening a fresh blank tab. Pass `new_tab=false` only when you want the legacy take-over behavior.
+- `browser_cookies_set` mid-session navigating the page to `about:blank` — fixed: the helper no longer navigates by default. Cookie application during initial session startup still navigates first to ensure the page state is clean.
+- Lingering Chromium processes after `session_stop` — fixed: the close path now waits on `browser.stopped()` and unconditionally cleans up any ephemeral cloned `user_data_dir`.
+
+Use `session_preflight` to debug failures before opening a session:
+
+```jsonc
+// AI client invocation
+{
+  "tool": "session_preflight",
+  "arguments": {
+    "host": "127.0.0.1",
+    "port": 9222,
+    "browser_executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "user_data_dir": "~/Library/Application Support/Google/Chrome"
+  }
+}
+```
+
+It returns: detected Chromium binaries on the host, whether `nodriver` imports cleanly, whether the optional DevTools endpoint is reachable, and whether the optional `user_data_dir` exists / looks locked by another browser.
+
 ## Centralized browser state store
 
 `browser-bridge-mcp` now keeps reusable browser state in one place:
@@ -190,6 +229,8 @@ Client config for this mode:
 
 - `session_start`
 - `session_attach`
+- `session_launch_modes`
+- `session_preflight`
 - `session_list`
 - `session_get`
 - `session_state_paths`
@@ -262,7 +303,7 @@ Client config for this mode:
 
 ## SKILL FILE
 
-- Skill: `skills/browser-bridge-mcp/SKILL.md`
+- Skill: `skills/browser-bridge-mcp-usage/SKILL.md`
 
 ## Troubleshooting
 

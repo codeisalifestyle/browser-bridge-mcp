@@ -290,6 +290,94 @@ class SessionTraceRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(replay["failed"], 0)
 
 
+class LaunchModesAndPreflightTest(unittest.IsolatedAsyncioTestCase):
+    async def test_launch_modes_returns_well_formed_catalog(self) -> None:
+        manager = BrowserSessionManager()
+        result = await manager.launch_modes()
+        self.assertIn("count", result)
+        self.assertIn("modes", result)
+        self.assertIn("decision_guide", result)
+        self.assertEqual(result["count"], len(result["modes"]))
+        self.assertGreaterEqual(result["count"], 6)
+
+        ids = {mode["id"] for mode in result["modes"]}
+        expected_ids = {
+            "ephemeral_fresh",
+            "headless_scrape",
+            "managed_profile",
+            "live_profile_clone",
+            "attach_existing_with_new_tab",
+            "attach_existing_take_over",
+        }
+        self.assertTrue(expected_ids.issubset(ids))
+
+        for mode in result["modes"]:
+            self.assertIn(mode["tool"], {"session_start", "session_attach"})
+            self.assertIsInstance(mode["summary"], str)
+            self.assertIsInstance(mode["when_to_use"], str)
+            self.assertIsInstance(mode["required_args"], list)
+            self.assertIsInstance(mode["optional_args"], list)
+            self.assertIsInstance(mode["example"], dict)
+            self.assertIn("tool", mode["example"])
+            self.assertIn("args", mode["example"])
+            self.assertIsInstance(mode["warnings"], list)
+
+    async def test_preflight_reports_environment(self) -> None:
+        manager = BrowserSessionManager()
+        result = await manager.preflight()
+        self.assertIn("platform", result)
+        self.assertIn("python", result)
+        self.assertIn("state_paths", result)
+        self.assertIn("nodriver", result)
+        self.assertIn("candidate_browsers", result)
+        self.assertIn("checks", result)
+        self.assertIn("ready", result)
+
+    async def test_preflight_validates_user_data_dir(self) -> None:
+        manager = BrowserSessionManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            udd = Path(tmpdir) / "fake-profile"
+            udd.mkdir()
+            (udd / "SingletonLock").write_text("lock", encoding="utf-8")
+            result = await manager.preflight(user_data_dir=str(udd))
+            user_data_check = next(
+                (c for c in result["checks"] if c["name"] == "user_data_dir"),
+                None,
+            )
+            self.assertIsNotNone(user_data_check)
+            self.assertTrue(user_data_check["exists"])
+            self.assertTrue(user_data_check["is_dir"])
+            self.assertTrue(user_data_check["looks_locked"])
+
+    async def test_preflight_validates_browser_executable_path(self) -> None:
+        manager = BrowserSessionManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_exe = Path(tmpdir) / "chrome"
+            fake_exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_exe.chmod(0o755)
+            result = await manager.preflight(browser_executable_path=str(fake_exe))
+            exe_check = next(
+                (c for c in result["checks"] if c["name"] == "browser_executable_path"),
+                None,
+            )
+            self.assertIsNotNone(exe_check)
+            self.assertTrue(exe_check["exists"])
+            self.assertTrue(exe_check["executable"])
+
+    async def test_preflight_devtools_probe_reports_unreachable(self) -> None:
+        manager = BrowserSessionManager()
+        # Port 1 is reserved and almost certainly closed; the probe should fail
+        # cleanly without raising.
+        result = await manager.preflight(host="127.0.0.1", port=1)
+        endpoint_check = next(
+            (c for c in result["checks"] if c["name"] == "devtools_endpoint"),
+            None,
+        )
+        self.assertIsNotNone(endpoint_check)
+        self.assertFalse(endpoint_check["reachable"])
+        self.assertIn("error", endpoint_check)
+
+
 class ProfileCloneRuntimeTest(unittest.TestCase):
     def test_prepare_ephemeral_user_data_dir_copies_profile_directory(self) -> None:
         manager = BrowserSessionManager()
