@@ -141,17 +141,34 @@ If these succeed, installation is complete.
 explicitly before calling `session_start` or `session_attach`. The MCP itself
 returns the same catalog at runtime via `session_launch_modes`.
 
+The MCP **always spawns a brand-new browser process**. It never attaches to or
+takes over the user's currently running browser. When given an external
+`user_data_dir`, the runtime first clones the auth-critical files into an
+ephemeral location using `clone_strategy` (default `auth_only`), so the user's
+live browser is never touched.
+
 | Mode | Tool | When to use | Example args |
 | --- | --- | --- | --- |
 | `ephemeral_fresh` | `session_start` | Fresh isolated browser, no identity. Default for scraping/E2E. | `{}` |
 | `headless_scrape` | `session_start` | Background scraping in CI / no UI. | `{ "headless": true }` |
 | `managed_profile` | `session_start` | Reusable persistent identity stored in the state root. | `{ "profile": "twitter_main" }` |
-| `live_profile_clone` | `session_start` | Use the user's REAL profile cookies once without disrupting their open browser. Auto-clones any external `user_data_dir`. | `{ "user_data_dir": "~/Library/Application Support/Google/Chrome", "browser_executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }` |
-| `attach_existing_with_new_tab` | `session_attach` | The user's browser is already running with `--remote-debugging-port`; do NOT touch their tabs. | `{ "host": "127.0.0.1", "port": 9222 }` |
-| `attach_existing_take_over` | `session_attach` | You explicitly want to drive the user's foreground tab. | `{ "host": "127.0.0.1", "port": 9222, "new_tab": false }` |
+| `live_profile_clone` | `session_start` | Spawn a NEW browser with the user's REAL logged-in identity. Auto-clones any external `user_data_dir`. Default `clone_strategy=auth_only` is sub-second and cross-platform. | `{ "user_data_dir": "~/Library/Application Support/Google/Chrome", "browser_executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" }` |
+| `attach_existing_with_new_tab` | `session_attach` | Advanced. The user manually launched a browser with `--remote-debugging-port`. | `{ "host": "127.0.0.1", "port": 9222 }` |
+| `attach_existing_take_over` | `session_attach` | Advanced. Explicitly drive the user's foreground tab. | `{ "host": "127.0.0.1", "port": 9222, "new_tab": false }` |
+
+### `clone_strategy` for `live_profile_clone`
+
+| Strategy | Platform | Cost | Fidelity | Notes |
+| --- | --- | --- | --- | --- |
+| `auth_only` (default) | macOS / Windows / Linux | sub-second, tens of MB | Cookies, Login Data, Preferences. No extensions/history. | Uses SQLite online backup, so it's safe even when the source browser is open. Recommended for almost all flows. |
+| `cow` | macOS only (APFS) | near-instant, near-zero disk | Full profile incl. extensions | Uses `cp -Rc` (copy-on-write clonefile). Falls back to `auth_only` on non-Darwin or non-APFS volumes. |
+| `full` | All | slow (GBs) | Full profile | Legacy `shutil.copytree`. Escape hatch only. |
 
 Common gotchas avoided by these recipes:
 
+- Multi-GB profile copies on every session start — fixed: `auth_only` is now the default `clone_strategy`, copying only the small files needed for authentication.
+- Source browser locking the cookie SQLite while we read it — fixed: `auth_only` uses SQLite's online backup API, which co-exists safely with the running browser.
+- Stale `SingletonLock` carried over from a CoW clone causing "profile in use" — fixed: cloned profiles have `SingletonLock`, `SingletonCookie`, and `SingletonSocket` stripped before launch.
 - Multiple windows opening when launching with `--profile-directory` but no `user_data_dir` — fixed: the flag is now only appended when an explicit `user_data_dir` is in play.
 - The MCP "hijacking" the user's foreground tab on attach — fixed: `session_attach` defaults to opening a fresh blank tab. Pass `new_tab=false` only when you want the legacy take-over behavior.
 - `browser_cookies_set` mid-session navigating the page to `about:blank` — fixed: the helper no longer navigates by default. Cookie application during initial session startup still navigates first to ensure the page state is clean.

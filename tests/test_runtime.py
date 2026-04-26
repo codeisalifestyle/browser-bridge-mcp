@@ -4,7 +4,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from browser_bridge_mcp.runtime import BrowserSession, BrowserSessionManager, resolve_connection
+import sqlite3
+
+from browser_bridge_mcp.runtime import (
+    BrowserSession,
+    BrowserSessionManager,
+    DEFAULT_CLONE_STRATEGY,
+    _cow_clone,
+    _safe_copy_sqlite,
+    _selective_auth_clone,
+    _strip_singleton_markers,
+    resolve_connection,
+)
 
 
 class ResolveConnectionTest(unittest.TestCase):
@@ -379,26 +390,184 @@ class LaunchModesAndPreflightTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ProfileCloneRuntimeTest(unittest.TestCase):
-    def test_prepare_ephemeral_user_data_dir_copies_profile_directory(self) -> None:
+    def _build_chromium_profile(self, tmpdir: str) -> Path:
+        """Build a synthetic Chromium-like profile layout for clone tests."""
+        source_root = Path(tmpdir) / "Brave-Browser"
+        source_profile = source_root / "Default"
+        source_profile.mkdir(parents=True, exist_ok=True)
+        (source_root / "Local State").write_text('{"test": true}', encoding="utf-8")
+        (source_profile / "Preferences").write_text("prefs", encoding="utf-8")
+        (source_profile / "Secure Preferences").write_text("secure", encoding="utf-8")
+
+        # Build a real SQLite Cookies DB to exercise the online-backup path.
+        cookies_db = source_profile / "Cookies"
+        with sqlite3.connect(str(cookies_db)) as conn:
+            conn.execute("CREATE TABLE cookies (host TEXT, name TEXT, value TEXT)")
+            conn.execute(
+                "INSERT INTO cookies VALUES (?, ?, ?)",
+                ("example.com", "session", "abc123"),
+            )
+
+        # And a Network/Cookies for newer Chromium layout.
+        network_dir = source_profile / "Network"
+        network_dir.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(network_dir / "Cookies")) as conn:
+            conn.execute("CREATE TABLE cookies (host TEXT, name TEXT)")
+            conn.execute("INSERT INTO cookies VALUES (?, ?)", ("x.com", "auth"))
+
+        # Junk that shouldn't be copied by auth_only.
+        big_cache = source_root / "Cache"
+        big_cache.mkdir(parents=True, exist_ok=True)
+        (big_cache / "data_0").write_bytes(b"\x00" * 4096)
+
+        # Singleton markers to verify they are stripped.
+        (source_root / "SingletonLock").write_text("pid-1234", encoding="utf-8")
+        (source_root / "SingletonCookie").write_text("cookie", encoding="utf-8")
+
+        return source_root
+
+    def test_prepare_ephemeral_user_data_dir_default_is_auth_only(self) -> None:
         manager = BrowserSessionManager()
         with tempfile.TemporaryDirectory() as tmpdir:
-            source_root = Path(tmpdir) / "Brave-Browser"
-            source_profile = source_root / "Default"
-            source_profile.mkdir(parents=True, exist_ok=True)
-            (source_root / "Local State").write_text('{"test": true}', encoding="utf-8")
-            (source_profile / "Cookies").write_text("cookie-db", encoding="utf-8")
-            (source_profile / "Preferences").write_text("prefs", encoding="utf-8")
-
+            source_root = self._build_chromium_profile(tmpdir)
             clone = manager._prepare_ephemeral_user_data_dir(
                 source_user_data_dir=str(source_root),
                 profile_directory="Default",
             )
             target_root = Path(clone["ephemeral_user_data_dir"])
+            self.addCleanup(lambda: __import__("shutil").rmtree(target_root, ignore_errors=True))
+
+            self.assertEqual(clone["clone_strategy"], "auth_only")
+            self.assertTrue((target_root / "Local State").exists())
+            self.assertTrue((target_root / "First Run").exists())
+            self.assertTrue((target_root / "Default" / "Cookies").exists())
+            self.assertTrue((target_root / "Default" / "Network" / "Cookies").exists())
+            self.assertTrue((target_root / "Default" / "Preferences").exists())
+            self.assertTrue((target_root / "Default" / "Secure Preferences").exists())
+
+            # Cache dir is not copied by auth_only.
+            self.assertFalse((target_root / "Cache").exists())
+
+            # Singleton markers must not be present in the clone.
+            self.assertFalse((target_root / "SingletonLock").exists())
+            self.assertFalse((target_root / "SingletonCookie").exists())
+
+            # Backed-up SQLite still queryable in clone.
+            with sqlite3.connect(str(target_root / "Default" / "Cookies")) as conn:
+                rows = list(conn.execute("SELECT host, name, value FROM cookies"))
+            self.assertEqual(rows, [("example.com", "session", "abc123")])
+
+    def test_prepare_ephemeral_user_data_dir_full_strategy(self) -> None:
+        manager = BrowserSessionManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_root = self._build_chromium_profile(tmpdir)
+            clone = manager._prepare_ephemeral_user_data_dir(
+                source_user_data_dir=str(source_root),
+                profile_directory="Default",
+                clone_strategy="full",
+            )
+            target_root = Path(clone["ephemeral_user_data_dir"])
+            self.addCleanup(lambda: __import__("shutil").rmtree(target_root, ignore_errors=True))
+
+            self.assertEqual(clone["clone_strategy"], "full")
             self.assertTrue((target_root / "Local State").exists())
             self.assertTrue((target_root / "Default" / "Cookies").exists())
             self.assertTrue((target_root / "Default" / "Preferences").exists())
-            self.assertEqual(clone["source_user_data_dir"], str(source_root.resolve()))
-            self.assertEqual(clone["profile_directory"], "Default")
+            # Singleton markers stripped even for full strategy.
+            self.assertFalse((target_root / "SingletonLock").exists())
+
+    def test_prepare_ephemeral_user_data_dir_rejects_unknown_strategy(self) -> None:
+        manager = BrowserSessionManager()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_root = self._build_chromium_profile(tmpdir)
+            with self.assertRaises(ValueError):
+                manager._prepare_ephemeral_user_data_dir(
+                    source_user_data_dir=str(source_root),
+                    profile_directory="Default",
+                    clone_strategy="bogus",
+                )
+
+    def test_safe_copy_sqlite_concurrent_with_writer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src_db = Path(tmpdir) / "Cookies"
+            with sqlite3.connect(str(src_db)) as conn:
+                conn.execute("CREATE TABLE cookies (host TEXT, value TEXT)")
+                conn.execute("INSERT INTO cookies VALUES (?, ?)", ("a.com", "1"))
+
+            # Hold the database open with an active transaction (simulates
+            # a running Chrome process).
+            holder = sqlite3.connect(str(src_db))
+            try:
+                holder.execute("BEGIN")
+                holder.execute("INSERT INTO cookies VALUES (?, ?)", ("b.com", "2"))
+
+                dst_db = Path(tmpdir) / "Cookies.copy"
+                _safe_copy_sqlite(src_db, dst_db)
+
+                self.assertTrue(dst_db.exists())
+                with sqlite3.connect(str(dst_db)) as conn:
+                    rows = list(conn.execute("SELECT host FROM cookies"))
+                # The committed row must be present; the uncommitted one must not.
+                self.assertEqual(rows, [("a.com",)])
+            finally:
+                holder.rollback()
+                holder.close()
+
+    def test_safe_copy_sqlite_falls_back_for_non_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            src = Path(tmpdir) / "not-sqlite"
+            src.write_bytes(b"plain text content")
+            dst = Path(tmpdir) / "out"
+            _safe_copy_sqlite(src, dst)
+            # Either the SQLite backup succeeded by treating it as empty
+            # SQLite, or fell back to shutil.copy2. Either way dst must exist.
+            self.assertTrue(dst.exists())
+
+    def test_strip_singleton_markers_removes_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "SingletonLock").write_text("pid", encoding="utf-8")
+            (root / "SingletonCookie").write_text("cookie", encoding="utf-8")
+            (root / "SingletonSocket").write_text("socket", encoding="utf-8")
+            (root / "OtherFile").write_text("keep", encoding="utf-8")
+
+            _strip_singleton_markers(root)
+
+            self.assertFalse((root / "SingletonLock").exists())
+            self.assertFalse((root / "SingletonCookie").exists())
+            self.assertFalse((root / "SingletonSocket").exists())
+            self.assertTrue((root / "OtherFile").exists())
+
+    def test_selective_auth_clone_creates_first_run_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_root = Path(tmpdir) / "Chrome"
+            (source_root / "Default").mkdir(parents=True, exist_ok=True)
+            clone = _selective_auth_clone(
+                source_root=source_root,
+                profile_directory="Default",
+            )
+            target = Path(clone["ephemeral_user_data_dir"])
+            self.addCleanup(lambda: __import__("shutil").rmtree(target, ignore_errors=True))
+            self.assertTrue((target / "First Run").exists())
+            self.assertEqual(clone["clone_strategy"], "auth_only")
+
+    def test_cow_clone_falls_back_to_auth_only_off_macos(self) -> None:
+        if __import__("sys").platform == "darwin":
+            self.skipTest("CoW clone is the active path on macOS; tested separately")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_root = Path(tmpdir) / "Chrome"
+            (source_root / "Default").mkdir(parents=True, exist_ok=True)
+            (source_root / "Local State").write_text("{}", encoding="utf-8")
+            clone = _cow_clone(
+                source_root=source_root,
+                profile_directory="Default",
+            )
+            target = Path(clone["ephemeral_user_data_dir"])
+            self.addCleanup(lambda: __import__("shutil").rmtree(target, ignore_errors=True))
+            self.assertEqual(clone["clone_strategy"], "auth_only")
+
+    def test_default_clone_strategy_constant(self) -> None:
+        self.assertEqual(DEFAULT_CLONE_STRATEGY, "auth_only")
 
 
 if __name__ == "__main__":

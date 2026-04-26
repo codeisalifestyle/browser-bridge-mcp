@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -87,19 +89,21 @@ LAUNCH_MODES: list[dict[str, Any]] = [
         "id": "live_profile_clone",
         "tool": "session_start",
         "summary": (
-            "Clone the user's real browser profile (Chrome/Brave) into an ephemeral copy "
-            "before launching, so the live browser is never disrupted."
+            "Spawn a NEW browser instance backed by an ephemeral copy of the user's real "
+            "profile so the live browser is never touched. Default clone_strategy is "
+            "'auth_only', which is fast (sub-second), tiny (<100 MB), cross-platform, "
+            "and safe to run while the source browser is open."
         ),
         "when_to_use": (
-            "One-off task that needs the user's real logged-in cookies but you do not "
-            "want to close their actual browser. Default safety auto-clones any "
-            "user_data_dir that is outside the centralized state root."
+            "Recommended path whenever the agent needs the user's real logged-in cookies. "
+            "Always launches a brand-new browser process; never attaches to a running one."
         ),
         "required_args": ["user_data_dir=<live profile dir>"],
         "optional_args": [
-            "duplicate_user_data_dir (defaults to true for external paths)",
+            "clone_strategy (auth_only [default] | cow [macOS] | full)",
             "profile_directory (defaults to 'Default')",
             "browser_executable_path",
+            "duplicate_user_data_dir (defaults to true for external paths)",
         ],
         "example": {
             "tool": "session_start",
@@ -107,12 +111,27 @@ LAUNCH_MODES: list[dict[str, Any]] = [
                 "user_data_dir": "~/Library/Application Support/BraveSoftware/Brave-Browser",
                 "profile_directory": "Default",
                 "browser_executable_path": "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+                "clone_strategy": "auth_only",
             },
         },
         "warnings": [
-            "Cloning copies cookies/Local State; HTTP-only cookies bound to OS keychain may not decrypt.",
-            "Verify auth state before relying on the cloned session.",
+            "Use the same browser binary that owns the source profile (Chrome -> Chrome, Brave -> Brave) so OS-keychain cookie decryption works.",
+            "macOS may show a one-time Keychain access prompt the first time the cloned process reads <Browser> Safe Storage.",
+            "Some sites bind sessions to a device fingerprint and may show a 'new device' challenge even with valid cookies.",
         ],
+        "clone_strategies": {
+            "auth_only": (
+                "Default. Copies only Local State + cookie/login SQLite files via SQLite online "
+                "backup. Cross-platform. Sub-second, tens of MB. Safe while source browser is running."
+            ),
+            "cow": (
+                "macOS only. Uses APFS clonefile (cp -Rc) for near-instant copy-on-write of the "
+                "full profile. Falls back to auth_only on non-Darwin or non-APFS volumes."
+            ),
+            "full": (
+                "Legacy whole-profile shutil.copytree. Slow, large. Kept as escape hatch only."
+            ),
+        },
     },
     {
         "id": "attach_existing_with_new_tab",
@@ -236,6 +255,216 @@ async def _probe_devtools_endpoint(host: str, port: int, *, timeout: float = 2.0
             return {"reachable": False, "error": str(exc)}
 
     return await asyncio.to_thread(_do_request)
+
+
+CLONE_STRATEGIES = ("auth_only", "cow", "full")
+DEFAULT_CLONE_STRATEGY = "auth_only"
+
+# Files copied by the auth_only strategy. Paths are relative to the chosen
+# profile_directory inside the source user_data_dir, EXCEPT for entries that
+# start with "<root>/" which are anchored to the user_data_dir root itself.
+#
+# - SQLite databases (*.sqlite-style files Chrome writes) are copied via the
+#   SQLite online backup API so we don't fight the source browser's lock.
+# - Plain JSON files (Local State, Preferences) and write-rarely files are
+#   copied with shutil.copy2.
+_AUTH_ONLY_ROOT_FILES = (
+    "Local State",
+)
+_AUTH_ONLY_PROFILE_PLAIN_FILES = (
+    "Preferences",
+    "Secure Preferences",
+)
+# These are SQLite databases. Chrome may hold them open in WAL mode while
+# running; SQLite's online backup API handles concurrent reads safely.
+_AUTH_ONLY_PROFILE_SQLITE_FILES = (
+    "Cookies",
+    "Network/Cookies",
+    "Login Data",
+    "Login Data For Account",
+    "Web Data",
+)
+_SINGLETON_MARKERS = ("SingletonLock", "SingletonCookie", "SingletonSocket")
+
+
+def _strip_singleton_markers(root: Path) -> None:
+    """Delete Chromium's singleton lock files from a cloned user_data_dir.
+
+    These can be carried over from a CoW snapshot of a running browser; if
+    present they cause Chromium to refuse to launch with a 'profile in use'
+    error, even though the cloned location is brand new.
+    """
+    for marker in _SINGLETON_MARKERS:
+        try:
+            (root / marker).unlink()
+        except FileNotFoundError:
+            pass
+        except IsADirectoryError:
+            shutil.rmtree(root / marker, ignore_errors=True)
+        except OSError:
+            pass
+
+
+def _safe_copy_sqlite(src: Path, dst: Path) -> None:
+    """Snapshot a SQLite DB that may be open and being written by another process.
+
+    Uses the SQLite online backup API in non-blocking mode:
+
+    * ``mode=ro``      : read-only handle on the source.
+    * ``immutable=1``  : tell SQLite the file is effectively unchanging, which
+                        makes it skip locking and journal/WAL inspection.
+    * ``nolock=1``     : never acquire an OS-level lock on the source.
+    * ``sleep=0`` and  : together guarantee the backup call never blocks
+      ``pages=-1``       waiting for a SQLITE_BUSY retry; the source browser
+                        can keep writing without holding us up.
+
+    The combination is safe for our use case (cloning Chromium cookie/login
+    databases) because we tolerate a slightly stale snapshot — auth cookies
+    don't churn at byte-level granularity. If the backup raises any
+    sqlite3.Error (for example: file is not actually a SQLite DB), we fall
+    back to ``shutil.copy2``.
+    """
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        try:
+            dst.unlink()
+        except OSError:
+            pass
+    src_uri = f"file:{src}?mode=ro&immutable=1&nolock=1"
+    try:
+        with sqlite3.connect(src_uri, uri=True, timeout=2.0) as src_db:
+            with sqlite3.connect(str(dst), timeout=2.0) as dst_db:
+                src_db.backup(dst_db, pages=-1, sleep=0)
+    except sqlite3.Error:
+        try:
+            shutil.copy2(src, dst)
+        except OSError:
+            pass
+
+
+def _selective_auth_clone(
+    *,
+    source_root: Path,
+    profile_directory: str,
+) -> dict[str, Any]:
+    """Cross-platform auth-only clone of a Chromium profile.
+
+    Copies just the files needed for the cloned process to authenticate
+    against the same sites the source browser is logged into:
+
+      * `<source>/Local State`   (top-level; contains os_crypt key reference)
+      * `<source>/<profile>/Preferences` and `Secure Preferences`
+      * `<source>/<profile>/Cookies`, `Network/Cookies`, `Login Data*`,
+        `Web Data` SQLite DBs (via SQLite online backup, safe to read while
+        the source browser is running)
+      * an empty `First Run` marker so Chromium skips first-run UI.
+
+    Typical cost: tens of MB and well under one second on local disk.
+    Returns the manifest expected by ``_prepare_ephemeral_user_data_dir``.
+    """
+    temp_root = Path(tempfile.mkdtemp(prefix="bbmcp-auth-clone-")).resolve()
+    target_profile = temp_root / profile_directory
+    target_profile.mkdir(parents=True, exist_ok=True)
+    (target_profile / "Network").mkdir(parents=True, exist_ok=True)
+
+    copied: list[str] = []
+
+    # Skip first-run UI.
+    try:
+        (temp_root / "First Run").write_bytes(b"")
+        copied.append(str(temp_root / "First Run"))
+    except OSError:
+        pass
+
+    for rel in _AUTH_ONLY_ROOT_FILES:
+        src = source_root / rel
+        if src.exists() and src.is_file():
+            try:
+                shutil.copy2(src, temp_root / rel)
+                copied.append(str(temp_root / rel))
+            except OSError:
+                pass
+
+    source_profile = source_root / profile_directory
+    if source_profile.exists() and source_profile.is_dir():
+        for rel in _AUTH_ONLY_PROFILE_PLAIN_FILES:
+            src = source_profile / rel
+            if src.exists() and src.is_file():
+                try:
+                    shutil.copy2(src, target_profile / rel)
+                    copied.append(str(target_profile / rel))
+                except OSError:
+                    pass
+        for rel in _AUTH_ONLY_PROFILE_SQLITE_FILES:
+            src = source_profile / rel
+            if src.exists() and src.is_file():
+                _safe_copy_sqlite(src, target_profile / rel)
+                if (target_profile / rel).exists():
+                    copied.append(str(target_profile / rel))
+
+    _strip_singleton_markers(temp_root)
+    return {
+        "source_user_data_dir": str(source_root),
+        "ephemeral_user_data_dir": str(temp_root),
+        "profile_directory": profile_directory,
+        "copied_paths": copied,
+        "clone_strategy": "auth_only",
+    }
+
+
+def _cow_clone(
+    *,
+    source_root: Path,
+    profile_directory: str,
+) -> dict[str, Any]:
+    """macOS APFS copy-on-write clone via ``cp -Rc``.
+
+    Near-instant, near-zero disk cost, and preserves the full profile (incl.
+    extensions/history). Falls back to selective auth_only on non-Darwin
+    platforms or when ``cp -Rc`` returns non-zero.
+    """
+    if sys.platform != "darwin":
+        return _selective_auth_clone(
+            source_root=source_root,
+            profile_directory=profile_directory,
+        )
+
+    temp_root = Path(tempfile.mkdtemp(prefix="bbmcp-cow-clone-")).resolve()
+    # cp expects the destination not to exist for a directory copy, but
+    # mkdtemp already created it; remove and re-create empty.
+    try:
+        shutil.rmtree(temp_root)
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ["cp", "-Rc", str(source_root), str(temp_root)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except (subprocess.SubprocessError, OSError):
+        result = None
+
+    if result is None or result.returncode != 0 or not temp_root.exists():
+        # Fall back to selective auth-only clone.
+        try:
+            shutil.rmtree(temp_root, ignore_errors=True)
+        except OSError:
+            pass
+        return _selective_auth_clone(
+            source_root=source_root,
+            profile_directory=profile_directory,
+        )
+
+    _strip_singleton_markers(temp_root)
+    return {
+        "source_user_data_dir": str(source_root),
+        "ephemeral_user_data_dir": str(temp_root),
+        "profile_directory": profile_directory,
+        "copied_paths": [str(temp_root)],
+        "clone_strategy": "cow",
+    }
 
 
 READ_ONLY_BLOCKED_ACTIONS = {
@@ -1229,11 +1458,44 @@ class BrowserSessionManager:
         *,
         source_user_data_dir: str,
         profile_directory: str,
+        clone_strategy: str | None = None,
     ) -> dict[str, Any]:
+        """Snapshot the source user_data_dir into an ephemeral clone.
+
+        Strategies (set via ``clone_strategy``):
+
+        * ``auth_only`` (default): copy only the small set of files the
+          launched browser needs to authenticate to the same sites the
+          source profile is logged into. Cross-platform, sub-second.
+          Safe to run while the source browser is open.
+        * ``cow``: macOS-only APFS copy-on-write of the full profile.
+          Falls back to ``auth_only`` on other platforms or if the
+          ``cp -Rc`` invocation fails.
+        * ``full``: legacy ``shutil.copytree`` of the whole profile.
+          Slow and large; retained as escape hatch.
+        """
         source_root = Path(source_user_data_dir).expanduser().resolve()
         if not source_root.exists() or not source_root.is_dir():
             raise FileNotFoundError(f"user_data_dir not found: {source_root}")
 
+        strategy = (clone_strategy or DEFAULT_CLONE_STRATEGY).strip().lower()
+        if strategy not in CLONE_STRATEGIES:
+            raise ValueError(
+                f"Unknown clone_strategy '{strategy}'. Expected one of {CLONE_STRATEGIES}."
+            )
+
+        if strategy == "auth_only":
+            return _selective_auth_clone(
+                source_root=source_root,
+                profile_directory=profile_directory,
+            )
+        if strategy == "cow":
+            return _cow_clone(
+                source_root=source_root,
+                profile_directory=profile_directory,
+            )
+
+        # strategy == "full"
         temp_root = Path(tempfile.mkdtemp(prefix="bbmcp-profile-clone-")).resolve()
         copied_paths: list[str] = []
 
@@ -1248,15 +1510,16 @@ class BrowserSessionManager:
             shutil.copytree(source_profile_dir, target_profile_dir, dirs_exist_ok=True)
             copied_paths.append(str(target_profile_dir))
         else:
-            # Fallback for uncommon layouts: copy entire root if profile dir is missing.
             shutil.copytree(source_root, temp_root, dirs_exist_ok=True)
             copied_paths.append(str(temp_root))
 
+        _strip_singleton_markers(temp_root)
         return {
             "source_user_data_dir": str(source_root),
             "ephemeral_user_data_dir": str(temp_root),
             "profile_directory": profile_directory,
             "copied_paths": copied_paths,
+            "clone_strategy": "full",
         }
 
     @staticmethod
@@ -1289,6 +1552,7 @@ class BrowserSessionManager:
         launch_config: str | None,
         duplicate_user_data_dir: bool | None = None,
         profile_directory: str | None = None,
+        clone_strategy: str | None = None,
     ) -> dict[str, Any]:
         resolved_session_id = session_id or f"sess_{uuid.uuid4().hex[:12]}"
         launch_context = self._resolve_launch_context(
@@ -1322,6 +1586,17 @@ class BrowserSessionManager:
         duplicate_source_user_data_dir: str | None = None
         ephemeral_user_data_dir: str | None = None
         duplicate_copy_paths: list[str] = []
+        applied_clone_strategy: str | None = None
+
+        if clone_strategy is not None:
+            normalized_clone_strategy = str(clone_strategy).strip().lower()
+            if normalized_clone_strategy not in CLONE_STRATEGIES:
+                raise ValueError(
+                    "clone_strategy must be one of "
+                    f"{CLONE_STRATEGIES}, got '{clone_strategy}'."
+                )
+        else:
+            normalized_clone_strategy = DEFAULT_CLONE_STRATEGY
 
         should_duplicate_user_data_dir = bool(duplicate_user_data_dir)
         if duplicate_user_data_dir is None and isinstance(resolved_user_data_dir, str):
@@ -1336,11 +1611,13 @@ class BrowserSessionManager:
             clone_info = self._prepare_ephemeral_user_data_dir(
                 source_user_data_dir=resolved_user_data_dir,
                 profile_directory=resolved_profile_directory,
+                clone_strategy=normalized_clone_strategy,
             )
             duplicate_applied = True
             duplicate_source_user_data_dir = clone_info["source_user_data_dir"]
             ephemeral_user_data_dir = clone_info["ephemeral_user_data_dir"]
             duplicate_copy_paths = list(clone_info["copied_paths"])
+            applied_clone_strategy = clone_info.get("clone_strategy", normalized_clone_strategy)
             resolved_user_data_dir = ephemeral_user_data_dir
 
         # Only push --profile-directory when an explicit user_data_dir is in play.
@@ -1416,6 +1693,9 @@ class BrowserSessionManager:
                     "duplicate_user_data_dir_source": duplicate_source_user_data_dir,
                     "ephemeral_user_data_dir": ephemeral_user_data_dir,
                     "profile_directory": resolved_profile_directory,
+                    "clone_strategy_requested": clone_strategy,
+                    "clone_strategy_applied": applied_clone_strategy,
+                    "duplicate_copy_paths_count": len(duplicate_copy_paths),
                     "duplicate_copy_paths": duplicate_copy_paths,
                     "browser_args": list(resolved_browser_args),
                     "browser_executable_path": resolved_browser_executable_path,

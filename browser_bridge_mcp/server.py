@@ -91,7 +91,16 @@ def create_server(
         lifespan=lifespan,
     )
 
-    @mcp.tool(name="session_start", description="Launch a new browser session.")
+    @mcp.tool(
+        name="session_start",
+        description=(
+            "Launch a new browser process. Always spawns a fresh executable; never "
+            "attaches to a running browser. When given an external user_data_dir "
+            "(for example the user's real Chrome/Brave profile), it auto-clones it "
+            "into an ephemeral directory using clone_strategy (default 'auth_only') "
+            "so the source browser is not disrupted."
+        ),
+    )
     async def session_start(
         session_id: str | None = None,
         headless: bool | None = None,
@@ -107,6 +116,7 @@ def create_server(
         launch_config: str | None = None,
         duplicate_user_data_dir: bool | None = None,
         profile_directory: str | None = None,
+        clone_strategy: str | None = None,
     ) -> dict[str, Any]:
         return await manager.start_session(
             session_id=session_id,
@@ -123,6 +133,7 @@ def create_server(
             launch_config=launch_config,
             duplicate_user_data_dir=duplicate_user_data_dir,
             profile_directory=profile_directory,
+            clone_strategy=clone_strategy,
         )
 
     @mcp.tool(

@@ -46,14 +46,27 @@ If any preflight check fails, report the blocker and stop before partial executi
 Always pick exactly ONE mode before calling `session_start` or `session_attach`.
 The MCP also exposes this matrix at runtime via `session_launch_modes`.
 
+The MCP **always spawns a brand-new browser executable** — it never attaches
+to the user's currently running browser process. When given an external
+`user_data_dir`, the runtime clones the auth-critical files into an ephemeral
+directory before launching, so the source browser is never touched.
+
 | Goal | Mode id | Tool | Key args | Why |
 | --- | --- | --- | --- | --- |
 | Fresh isolated browser, no identity | `ephemeral_fresh` | `session_start` | (none) | Safe default; never disrupts user. |
 | Background scrape, no UI | `headless_scrape` | `session_start` | `headless=true` | Server / CI use. |
 | Reusable identity that persists | `managed_profile` | `session_start` | `profile=<name>` | Centralized in state root; durable. |
-| Use user's REAL cookies once, without disrupting them | `live_profile_clone` | `session_start` | `user_data_dir=<live profile>` (auto-cloned) | Original Chrome/Brave keeps running. |
-| User already has a debug-port browser open, do NOT touch their tabs | `attach_existing_with_new_tab` | `session_attach` | `host`+`port`, default `new_tab=true` | Opens a fresh tab to work in. |
-| Take over the user's foreground tab | `attach_existing_take_over` | `session_attach` | `host`+`port`, `new_tab=false` | Advanced; navigation is destructive. |
+| Use user's REAL logged-in identity in a brand-new process | `live_profile_clone` | `session_start` | `user_data_dir=<live profile>` (auto-cloned via `clone_strategy`) | Original Chrome/Brave keeps running undisturbed. |
+| Attach to a debug-port browser, fresh tab | `attach_existing_with_new_tab` | `session_attach` | `host`+`port`, default `new_tab=true` | Niche / advanced; only when a browser was launched with `--remote-debugging-port`. |
+| Take over the foreground tab | `attach_existing_take_over` | `session_attach` | `host`+`port`, `new_tab=false` | Advanced; navigation is destructive. |
+
+### `clone_strategy` for `live_profile_clone`
+
+| Strategy | Platform | Cost | Fidelity | When to pick |
+| --- | --- | --- | --- | --- |
+| `auth_only` (default) | macOS + Windows + Linux | Sub-second, tens of MB | Cookies, Login Data, Preferences. No extensions/history. | 99% of cases. Cross-platform. Safe while source browser is open (uses SQLite online backup). |
+| `cow` | macOS only (APFS) | Near-instant, near-zero disk via clonefile | Full profile incl. extensions | When the flow needs extensions or local browser history. Falls back to `auth_only` on non-Darwin. |
+| `full` | All | Slow (GBs), full copy via `shutil.copytree` | Full profile | Escape hatch only. |
 
 ### Hard rules
 
